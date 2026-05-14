@@ -22,6 +22,14 @@ services:
         value: https://pub-4cea1c464af34c79a4a249df418381f1.r2.dev
       - key: ADMIN_USERNAME
         value: admin
+      - key: NEXT_PUBLIC_BASE_URL
+        value: https://threeds-5mgk.onrender.com
+      - key: SESSION_TOKEN_SECRET
+        value: 69835bd6db0fcfb4c7caa1ffd3a3cad2c12ec914720de9d2bcca84dc17689b31
+      - key: CLEANUP_SECRET
+        value: 61286bb37808319585fbad5f8f57aeccdfda53bcaf2d6bc70eea4eb707c049cd
+      - key: ADMIN_JWT_SECRET
+        value: 6cdb67f74189b08aef2c9a34a10bde31b5bf3e1291d90439e2febdecb1541d10
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
@@ -32,15 +40,7 @@ services:
         sync: false
       - key: R2_SECRET_ACCESS_KEY
         sync: false
-      - key: SESSION_TOKEN_SECRET
-        sync: false
-      - key: ADMIN_JWT_SECRET
-        sync: false
-      - key: CLEANUP_SECRET
-        sync: false
       - key: ADMIN_PASSWORD
         sync: false
       - key: GEMINI_API_KEY
-        sync: false
-      - key: NEXT_PUBLIC_BASE_URL
         sync: false
