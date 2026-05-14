@@ -41,16 +41,6 @@ const REQUIRED: EnvSpec[] = [
     hint: "HMAC secret for admin session cookies — generate with: openssl rand -hex 32",
     productionOnly: true,
   },
-  {
-    key: "GEMINI_API_KEY",
-    hint: "Google Gemini API key — required by the render pipeline",
-    productionOnly: true,
-  },
-  {
-    key: "REDIS_URL",
-    hint: "Redis connection URL — required for distributed rate limiting, render locks, and SSE pub/sub across serverless instances. Without it, rate limits and real-time events only work on a single process. Use Upstash or Redis Cloud.",
-    productionOnly: true,
-  },
 ];
 
 // ─── Public API ───────────────────────────────────────────────────────────────
