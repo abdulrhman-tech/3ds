@@ -1,5 +1,3 @@
-import { loginAction } from "./actions";
-
 interface LoginPageProps {
   searchParams: Promise<{ error?: string; next?: string }>;
 }
@@ -43,9 +41,8 @@ export default async function AdminLoginPage({ searchParams }: LoginPageProps) {
           </div>
         )}
 
-        {/* Login form */}
-        <form action={loginAction} className="space-y-4">
-          {/* Pass intended destination through so loginAction can redirect back */}
+        {/* Login form — POST to API route (no Server Action, survives redeploys) */}
+        <form action="/api/admin/login" method="POST" className="space-y-4">
           {next && <input type="hidden" name="next" value={next} />}
 
           <div>
