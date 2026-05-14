@@ -349,16 +349,14 @@ export async function POST(
       });
     });
 
-    after(async () => {
+    void (async () => {
       const userSessionId = await getUserSessionIdForSession(sessionId);
       if (userSessionId) {
         await trackEvent({ userSessionId, eventType: "render_started", sessionId });
       }
-    });
+    })();
 
-    after(async () => {
-      await executeRenderPipeline(sessionId);
-    });
+    void executeRenderPipeline(sessionId);
 
     return NextResponse.json(updatedSession, { status: 202 });
   } catch (error) {
