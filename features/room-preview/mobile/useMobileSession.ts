@@ -714,50 +714,79 @@ export function useMobileSession({
 
       if (usedDirectUpload && uploadUrlResponse) {
         // ── Step 2: PUT file directly to R2 ────────────────────────────────
-        await uploadFileToR2(
-          uploadUrlResponse.uploadUrl,
-          fileToUpload,
-          {
-            onProgress: (percent) => {
-              setRoomSaveStatusLabel(`جاري رفع صورة الغرفة... ${percent}%`);
+        let r2PutFailed = false;
+
+        try {
+          await uploadFileToR2(
+            uploadUrlResponse.uploadUrl,
+            fileToUpload,
+            {
+              onProgress: (percent) => {
+                setRoomSaveStatusLabel(`جاري رفع صورة الغرفة... ${percent}%`);
+              },
+              onR2Failure: ({ status, statusText, responseText, host }) => {
+                trackClientSessionEvent(sessionId, {
+                  source: "mobile",
+                  eventType: "room_direct_upload_r2_failed",
+                  level: "error",
+                  code: status === 403 ? "R2_SIGNATURE_INVALID" : status === 0 ? "R2_CORS_OR_NETWORK" : "R2_PUT_FAILED",
+                  metadata: {
+                    status,
+                    statusText,
+                    responseText: responseText.slice(0, 500),
+                    host,
+                    source,
+                    fileType: fileToUpload.type,
+                    fileSize: fileToUpload.size,
+                  },
+                });
+              },
             },
-            onR2Failure: ({ status, statusText, responseText, host }) => {
-              trackClientSessionEvent(sessionId, {
-                source: "mobile",
-                eventType: "room_direct_upload_r2_failed",
-                level: "error",
-                code: status === 403 ? "R2_SIGNATURE_INVALID" : status === 0 ? "R2_CORS_OR_NETWORK" : "R2_PUT_FAILED",
-                metadata: {
-                  status,
-                  statusText,
-                  responseText: responseText.slice(0, 500),
-                  host,
-                  source,
-                  fileType: fileToUpload.type,
-                  fileSize: fileToUpload.size,
-                },
-              });
-            },
-          },
-        );
+          );
 
-        debugLog("success", `File uploaded to R2 (${fileToUpload.size}b)`);
-        setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
+          debugLog("success", `File uploaded to R2 (${fileToUpload.size}b)`);
+          setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
 
-        // ── Step 3: confirm the upload on the server ────────────────────────
-        response = await confirmDirectUpload(sessionId, {
-          objectKey: uploadUrlResponse.objectKey,
-          publicUrl: uploadUrlResponse.publicUrl,
-          source,
-          file: fileToUpload,
-        });
+          // ── Step 3: confirm the upload on the server ────────────────────────
+          response = await confirmDirectUpload(sessionId, {
+            objectKey: uploadUrlResponse.objectKey,
+            publicUrl: uploadUrlResponse.publicUrl,
+            source,
+            file: fileToUpload,
+          });
 
-        trackClientSessionEvent(sessionId, {
-          source: "mobile",
-          eventType: "room_direct_upload_confirmed",
-          level: "info",
-          metadata: { source, objectKey: uploadUrlResponse.objectKey },
-        });
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "room_direct_upload_confirmed",
+            level: "info",
+            metadata: { source, objectKey: uploadUrlResponse.objectKey },
+          });
+        } catch (r2Error) {
+          // R2 PUT failed — if it's a CORS / network error (status 0), fall back
+          // to the server-proxied FormData upload rather than showing an error.
+          // Any other error (403 bad signature, 5xx, etc.) is re-thrown.
+          if (isRoomPreviewRequestError(r2Error) && r2Error.code === "network") {
+            r2PutFailed = true;
+            debugLog("network", "R2 PUT blocked (likely CORS) — retrying via server upload");
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "room_upload_started",
+              level: "info",
+              metadata: { source, fallback: "server_proxy", reason: "r2_cors_fallback" },
+            });
+          } else {
+            throw r2Error;
+          }
+        }
+
+        if (r2PutFailed) {
+          // ── CORS fallback: proxy the upload through our Next.js server ───────
+          setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
+          response = await saveRoomPreviewSessionRoom(
+            sessionId,
+            { source, file: fileToUpload, previousRoomImageUrl: session.selectedRoom?.imageUrl },
+          );
+        }
       } else {
         // ── Fallback: old FormData upload (development / non-R2) ────────────
         response = await saveRoomPreviewSessionRoom(
