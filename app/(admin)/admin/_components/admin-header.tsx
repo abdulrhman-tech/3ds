@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useActionState } from "react";
-import { logoutAction } from "../login/actions";
 import { triggerCleanup, type CleanupResult } from "../actions";
 import { AutoRefresh } from "./auto-refresh";
 
@@ -109,7 +108,7 @@ export function AdminHeader() {
             </>
           )}
 
-          <form action={logoutAction}>
+          <form action="/api/admin/logout" method="POST">
             <button
               type="submit"
               className="text-sm text-gray-400 hover:text-white transition-colors px-3 py-1.5 rounded-md hover:bg-gray-800"
