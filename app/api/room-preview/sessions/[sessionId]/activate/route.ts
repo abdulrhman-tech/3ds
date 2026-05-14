@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { type NextRequest, NextResponse, after } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { isSupportedLocale, LOCALE_COOKIE_NAME } from "@/lib/i18n/config";

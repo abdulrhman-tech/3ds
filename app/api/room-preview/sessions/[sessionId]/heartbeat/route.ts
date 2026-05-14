@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { type NextRequest, NextResponse } from "next/server";
 import { MOBILE_TOKEN_COOKIE, SCREEN_TOKEN_COOKIE } from "@/lib/room-preview/cookies";
 import { verifySessionToken } from "@/lib/room-preview/session-token";

@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { type NextRequest, NextResponse } from "next/server";
 import { createRoomPreviewSession } from "@/lib/room-preview/session-service";
 import { generateSessionToken } from "@/lib/room-preview/session-token";

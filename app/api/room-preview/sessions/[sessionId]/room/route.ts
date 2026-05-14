@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { after, NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { guardSession } from "@/lib/room-preview/api-guard";

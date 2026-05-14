@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";

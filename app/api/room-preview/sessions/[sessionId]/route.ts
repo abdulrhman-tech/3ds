@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { getRoomPreviewSession } from "@/lib/room-preview/session-service";

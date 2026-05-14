@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * TEMPORARY DEBUG ENDPOINT — DELETE AFTER R2 CORS DEBUGGING IS COMPLETE
  *
