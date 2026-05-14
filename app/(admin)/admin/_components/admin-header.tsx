@@ -95,6 +95,7 @@ export function AdminHeader() {
             {navLink("/admin", "Dashboard")}
             {navLink("/admin/analytics", "Analytics")}
             {navLink("/admin/diagnostics", "Diagnostics")}
+            {navLink("/admin/system", "System")}
           </nav>
         </div>
 
