@@ -91,7 +91,7 @@ export default function ProductStep({
                 src={activeProduct.imageUrl}
                 alt="Premium Product Preview"
                 fill
-                unoptimized
+                priority
                 className="object-contain drop-shadow-[0_20px_30px_rgba(0,0,0,0.30)] transition-all duration-500 group-hover:drop-shadow-[0_30px_50px_rgba(0,0,0,0.40)]"
                 sizes="(max-width: 768px) 80vw, 360px"
               />
@@ -146,7 +146,6 @@ export default function ProductStep({
                   src={product.imageUrl}
                   alt={product.name}
                   fill
-                  unoptimized
                   className="object-cover"
                   sizes="56px"
                 />
