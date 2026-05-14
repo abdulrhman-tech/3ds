@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: room-preview
+    runtime: node
+    region: frankfurt
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STORAGE_PROVIDER
+        value: r2
+      - key: ENABLE_REDIS
+        value: "false"
+      - key: ROOM_PREVIEW_DISABLE_RATE_LIMIT
+        value: "false"
+      - key: R2_BUCKET_NAME
+        value: 3rds
+      - key: R2_PUBLIC_URL
+        value: https://pub-4cea1c464af34c79a4a249df418381f1.r2.dev
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: SESSION_TOKEN_SECRET
+        sync: false
+      - key: ADMIN_JWT_SECRET
+        sync: false
+      - key: CLEANUP_SECRET
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NEXT_PUBLIC_BASE_URL
+        sync: false
