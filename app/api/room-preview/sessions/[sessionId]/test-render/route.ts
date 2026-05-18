@@ -1,4 +1,4 @@
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { guardSession } from "@/lib/room-preview/api-guard";
 import { products } from "@/data/products";
 import {
@@ -69,9 +69,7 @@ export async function POST(
     await selectProductForSession(sessionId, selectedProduct);
     const session = await startRenderSession(sessionId);
 
-    after(async () => {
-      await executeRenderPipeline(sessionId);
-    });
+    void executeRenderPipeline(sessionId);
 
     return NextResponse.json(session, { status: 202 });
   } catch (error) {
