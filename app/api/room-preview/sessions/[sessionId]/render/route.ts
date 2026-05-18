@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { guardSession } from "@/lib/room-preview/api-guard";
 import { isRoomPreviewRateLimitDisabled } from "@/lib/room-preview/rate-limit-bypass";
@@ -164,7 +164,7 @@ export async function POST(
     if (!rateLimitDisabled && cooldownResult.limited) {
       log.warn({ sessionId, deviceId, ttl: cooldownResult.ttl }, "Render blocked — device cooldown active");
 
-      after(async () => {
+      void (async () => {
         const now = Date.now();
         const last = deviceCooldownWarnMap.get(deviceId);
         if (last === undefined || now - last >= RATE_LIMIT_WARN_COOLDOWN_MS) {
@@ -180,7 +180,7 @@ export async function POST(
             },
           });
         }
-      });
+      })();
 
       return tooManyRequests(
         { error: "Device cooldown active. Try again after 5 minutes.", code: "RENDER_DEVICE_COOLDOWN" },
@@ -195,7 +195,7 @@ export async function POST(
         log.warn({ sessionId, currentCount: countResult.currentCount }, "Render blocked — session limit reached");
 
         // Fire render_limit_reached once per 60 s per session to avoid timeline spam.
-        after(async () => {
+        void (async () => {
           const now = Date.now();
           const last = renderLimitWarnCooldown.get(sessionId);
           if (last === undefined || now - last >= RATE_LIMIT_WARN_COOLDOWN_MS) {
@@ -212,7 +212,7 @@ export async function POST(
               },
             });
           }
-        });
+        })();
 
         return tooManyRequests(
           { error: "Session render limit reached.", code: "RENDER_LIMIT_REACHED" },
@@ -239,11 +239,10 @@ export async function POST(
         if (!budget.allowed) {
           log.warn({ sessionId, screenId }, "Render blocked — screen daily budget exhausted");
 
-          // Capture non-null locals for use inside the after() closure.
           const screenIdNonNull = screenId;
           const dailyBudget = screen.dailyBudget;
 
-          after(async () => {
+          void (async () => {
             const now = Date.now();
             const last = screenBudgetWarnMap.get(screenIdNonNull);
             if (last === undefined || now - last >= RATE_LIMIT_WARN_COOLDOWN_MS) {
@@ -260,7 +259,7 @@ export async function POST(
                 },
               });
             }
-          });
+          })();
 
           return tooManyRequests(
             { error: "Screen daily render budget exhausted.", code: "SCREEN_BUDGET_EXHAUSTED" },
@@ -305,12 +304,7 @@ export async function POST(
     }
 
     // ── 10. Post-response work (non-blocking) ──────────────────────────────
-    //
-    // setDeviceCooldown, screen timestamp, render hash, and the render_requested
-    // diagnostic are all rate-limiting metadata or audit records. None of them
-    // affect the 202 body or the render pipeline. Running them in after() removes
-    // ~40–60ms from the critical path.
-    after(async () => {
+    void (async () => {
       const writes: Promise<unknown>[] = [];
 
       if (!rateLimitDisabled) {
@@ -338,15 +332,13 @@ export async function POST(
       }
 
       if (writes.length > 0) await Promise.all(writes);
-    });
+    })();
 
-    after(async () => {
-      void trackSessionEvent({
-        sessionId,
-        source: "server",
-        eventType: "render_requested",
-        level: "info",
-      });
+    void trackSessionEvent({
+      sessionId,
+      source: "server",
+      eventType: "render_requested",
+      level: "info",
     });
 
     void (async () => {
