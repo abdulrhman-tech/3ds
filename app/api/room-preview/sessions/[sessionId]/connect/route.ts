@@ -1,5 +1,5 @@
 export const dynamic = "force-dynamic";
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { guardSession } from "@/lib/room-preview/api-guard";
 import {
@@ -24,12 +24,12 @@ export async function POST(
   try {
     const session = await connectMobileToSession(sessionId);
 
-    after(async () => {
+    void (async () => {
       const userSessionId = await getUserSessionIdForSession(sessionId);
       if (userSessionId) {
         await trackEvent({ userSessionId, eventType: "qr_scanned", sessionId });
       }
-    });
+    })();
 
     return NextResponse.json(session);
   } catch (error) {
