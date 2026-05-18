@@ -1,6 +1,5 @@
 "use server";
 
-import { after } from "next/server";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { gateFormSchema } from "@/lib/analytics/validators";
@@ -451,14 +450,12 @@ export async function submitGateForm(formData: FormData) {
     },
   });
 
-  after(() =>
-    trackEvent({
-      userSessionId,
-      eventType: "user_entered",
-      sessionId,
-      metadata: { role: userRole, device: ua },
-    }),
-  );
+  void trackEvent({
+    userSessionId,
+    eventType: "user_entered",
+    sessionId,
+    metadata: { role: userRole, device: ua },
+  });
 
   // ── Dev: mint mobile cookie if missing ─────────────────────────────────────
   if (process.env.NODE_ENV === "development" && !token) {
