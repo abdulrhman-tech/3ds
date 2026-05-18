@@ -1,8 +1,6 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
-import { after } from "next/server";
-
 import { renderRoomPreviewWithProvider } from "@/lib/room-preview/render-providers";
 import { acquireGeminiSlot, releaseGeminiSlot } from "@/lib/room-preview/gemini-semaphore";
 import { publishRoomPreviewSessionEvent } from "@/lib/room-preview/session-events";
@@ -226,7 +224,7 @@ async function runRoomPreviewRenderPipeline(sessionId: string) {
       },
     });
 
-    after(async () => {
+    void (async () => {
       const userSessionId = await getUserSessionIdForSession(sessionId);
       if (userSessionId) {
         await trackEvent({
@@ -240,7 +238,7 @@ async function runRoomPreviewRenderPipeline(sessionId: string) {
           },
         });
       }
-    });
+    })();
 
     await persistSessionTransition(
       completeRenderingTransition(session, {
@@ -253,15 +251,13 @@ async function runRoomPreviewRenderPipeline(sessionId: string) {
     );
 
     // Save experience for returning customer tracking (fire-and-forget).
-    after(async () => {
-      await saveCustomerExperienceForSession(sessionId, {
-        roomImageUrl: session.selectedRoom?.imageUrl,
-        productId: session.selectedProduct?.id,
-        productName: session.selectedProduct?.name,
-        resultImageUrl: result.imageUrl,
-      }).catch((err) => {
-        log.warn({ err, sessionId }, "Failed to save customer experience after render");
-      });
+    void saveCustomerExperienceForSession(sessionId, {
+      roomImageUrl: session.selectedRoom?.imageUrl,
+      productId: session.selectedProduct?.id,
+      productName: session.selectedProduct?.name,
+      resultImageUrl: result.imageUrl,
+    }).catch((err) => {
+      log.warn({ err, sessionId }, "Failed to save customer experience after render");
     });
   } catch (err) {
     if (renderJobId) {
@@ -293,7 +289,7 @@ async function runRoomPreviewRenderPipeline(sessionId: string) {
       log.error({ err: error, sessionId }, "Failed to roll back render count after pipeline failure");
     });
 
-    after(async () => {
+    void (async () => {
       const userSessionId = await getUserSessionIdForSession(sessionId);
       if (userSessionId) {
         await trackEvent({
@@ -304,7 +300,7 @@ async function runRoomPreviewRenderPipeline(sessionId: string) {
           metadata: { error: err instanceof Error ? err.message : String(err) },
         });
       }
-    });
+    })();
 
     log.error({ err, renderJobId, sessionId }, "Render pipeline failed");
   }
