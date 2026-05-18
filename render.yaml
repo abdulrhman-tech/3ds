@@ -25,11 +25,11 @@ services:
       - key: NEXT_PUBLIC_BASE_URL
         value: https://threeds-5mgk.onrender.com
       - key: SESSION_TOKEN_SECRET
-        value: 69835bd6db0fcfb4c7caa1ffd3a3cad2c12ec914720de9d2bcca84dc17689b31
+        sync: false
       - key: CLEANUP_SECRET
-        value: 61286bb37808319585fbad5f8f57aeccdfda53bcaf2d6bc70eea4eb707c049cd
+        sync: false
       - key: ADMIN_JWT_SECRET
-        value: 6cdb67f74189b08aef2c9a34a10bde31b5bf3e1291d90439e2febdecb1541d10
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
