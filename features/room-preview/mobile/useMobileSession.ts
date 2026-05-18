@@ -904,6 +904,18 @@ export function useMobileSession({
             console.error("[room-preview] Failed to save product", { sessionId, productId, error: saveError });
             setError(createActionErrorMessage(saveError, t.roomPreview.mobile.product.saveFailed));
             setProductSaveStatus("error");
+            // Track in DB so the error is visible in admin/system diagnostics
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "product_save_failed",
+              level: "error",
+              code: isRoomPreviewRequestError(saveError) ? saveError.code : null,
+              message: saveError instanceof Error ? saveError.message : String(saveError),
+              metadata: {
+                productId,
+                status: isRoomPreviewRequestError(saveError) ? saveError.status : null,
+              },
+            });
           }
         })
         .finally(() => {
