@@ -100,6 +100,7 @@ async function doFetch(
   init: RequestInit,
   headers: Headers,
   timeoutMs: number,
+  fallbackMessage: string,
 ): Promise<Response> {
   const timeout = createTimeoutSignal(timeoutMs);
 
@@ -133,7 +134,7 @@ export async function requestRoomPreviewJson(
 ) {
   const headers = new Headers(init.headers);
 
-  let response = await doFetch(input, init, headers, timeoutMs);
+  let response = await doFetch(input, init, headers, timeoutMs, fallbackMessage);
 
   // ── Auto-retry once on 429 from the proxy / CDN ───────────────────────────
   // Render.com's free-tier proxy can return 429 before the request reaches
