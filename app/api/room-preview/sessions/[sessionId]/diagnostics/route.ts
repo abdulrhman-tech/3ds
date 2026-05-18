@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { after } from "next/server";
 import { z } from "zod";
 import { getLogger } from "@/lib/logger";
 import { isSessionIssueType } from "@/lib/room-preview/issue-catalog";
@@ -178,11 +177,10 @@ export async function POST(
     return new NextResponse(null, { status: 204 });
   }
 
-  // ── 5. Persist event — fire-and-forget via after() ────────────────────────
-  // The HTTP response is sent immediately; DB writes happen after it's flushed.
-  // Diagnostics failures must never affect the customer flow.
+  // ── 5. Persist event — fire-and-forget ────────────────────────────────────
+  // Diagnostics failures must never block the response or affect the customer flow.
   const eventData = parsed.data;
-  after(async () => {
+  void (async () => {
     await trackSessionEvent({
       sessionId,
       source: eventData.source,
@@ -208,7 +206,7 @@ export async function POST(
         },
       });
     }
-  });
+  })();
 
   return NextResponse.json({ ok: true });
 }
