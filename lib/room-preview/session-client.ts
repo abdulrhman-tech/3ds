@@ -95,29 +95,21 @@ function assertRoomPreviewResponse<T>(
   }
 }
 
-export async function requestRoomPreviewJson(
+async function doFetch(
   input: string,
   init: RequestInit,
-  fallbackMessage: string,
-  timeoutMs: number = ROOM_PREVIEW_TIMEOUTS.REQUEST_MS,
-) {
+  headers: Headers,
+  timeoutMs: number,
+): Promise<Response> {
   const timeout = createTimeoutSignal(timeoutMs);
-  let response: Response;
-
-  const headers = new Headers(init.headers);
 
   try {
-    // Race the fetch against an independent promise-based timer.
-    // This ensures timeout fires even when the browser throttles setTimeout
-    // (iOS background tabs, some Android WebViews).
-    response = await Promise.race([
-      fetch(input, {
-        ...init,
-        headers,
-        signal: timeout.signal,
-      }),
+    const response = await Promise.race([
+      fetch(input, { ...init, headers, signal: timeout.signal }),
       rejectAfter(timeoutMs),
     ]);
+    timeout.clear();
+    return response;
   } catch (error) {
     timeout.clear();
 
@@ -131,8 +123,27 @@ export async function requestRoomPreviewJson(
 
     throw new RoomPreviewRequestError("network", getErrorMessage(error, fallbackMessage));
   }
+}
 
-  timeout.clear();
+export async function requestRoomPreviewJson(
+  input: string,
+  init: RequestInit,
+  fallbackMessage: string,
+  timeoutMs: number = ROOM_PREVIEW_TIMEOUTS.REQUEST_MS,
+) {
+  const headers = new Headers(init.headers);
+
+  let response = await doFetch(input, init, headers, timeoutMs);
+
+  // ── Auto-retry once on 429 from the proxy / CDN ───────────────────────────
+  // Render.com's free-tier proxy can return 429 before the request reaches
+  // Next.js (e.g. cold-start queue). Wait for Retry-After (or 2 s) then try once more.
+  if (response.status === 429) {
+    const retryAfterHeader = response.headers.get("Retry-After");
+    const waitMs = retryAfterHeader ? Math.min(parseInt(retryAfterHeader, 10) * 1000, 5000) : 2000;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    response = await doFetch(input, init, headers, timeoutMs);
+  }
 
   let data: unknown;
 
