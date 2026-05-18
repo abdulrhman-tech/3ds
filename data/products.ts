@@ -7,7 +7,7 @@ export const products = [
   { code: "P-001",  name: "باركيه",    type: "floor_plank",    target: "floor",   image: "/products/P-001.jpg"  },
   { code: "C-001",  name: "كاربت",     type: "floor_tile",     target: "floor",   image: "/products/C-001.jpg"  },
   { code: "T-001",  name: "سيراميك",   type: "large_tile",     target: "floor",   image: "/products/T-001.jpg"  },
-  { code: "W-001",  name: "ورق جدران", type: "wallpaper",      target: "wall",    image: "/products/W-001.png"  },
+  { code: "W-001",  name: "ورق جدران", type: "wallpaper",      target: "wall",    image: "/products/W-001.webp" },
   { code: "M-001",  name: "MDF",       type: "wall_panel",     target: "wall",    image: "/products/M-001.jpeg" },
   { code: "S-001",  name: "بديل حجر",  type: "stone_panel",    target: "wall",    image: "/products/S-001.jpg"  },
   { code: "PT-001", name: "بلاط مسبح", type: "pool_tile",      target: "pool",    image: "/products/PT-001.jpg" },
