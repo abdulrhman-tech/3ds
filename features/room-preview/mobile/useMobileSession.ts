@@ -716,6 +716,10 @@ export function useMobileSession({
         // ── Step 2: PUT file directly to R2 ────────────────────────────────
         let r2PutFailed = false;
 
+        // ── PUT directly to R2 — isolated try/catch so that only genuine
+        // R2 network failures (CORS / connection drop, status 0) are caught
+        // here. Errors from confirmDirectUpload below are NOT caught by this
+        // block and propagate to the outer handler.
         try {
           await uploadFileToR2(
             uploadUrlResponse.uploadUrl,
@@ -743,11 +747,35 @@ export function useMobileSession({
               },
             },
           );
+        } catch (r2PutError) {
+          // Only CORS / network errors (XHR onerror → status 0, code "network")
+          // fall back silently. Auth failures (403) or server errors are re-thrown.
+          if (isRoomPreviewRequestError(r2PutError) && r2PutError.code === "network") {
+            r2PutFailed = true;
+            debugLog("network", "R2 PUT blocked (CORS/network) — falling back to server upload");
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "room_upload_started",
+              level: "info",
+              metadata: { source, fallback: "server_proxy", reason: "r2_cors_fallback" },
+            });
+          } else {
+            throw r2PutError;
+          }
+        }
 
+        if (r2PutFailed) {
+          // ── CORS fallback: proxy upload through our Next.js server ───────────
+          setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
+          response = await saveRoomPreviewSessionRoom(
+            sessionId,
+            { source, file: fileToUpload, previousRoomImageUrl: session.selectedRoom?.imageUrl },
+          );
+        } else {
           debugLog("success", `File uploaded to R2 (${fileToUpload.size}b)`);
           setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
 
-          // ── Step 3: confirm the upload on the server ────────────────────────
+          // ── Step 3: confirm the upload on the server ──────────────────────
           response = await confirmDirectUpload(sessionId, {
             objectKey: uploadUrlResponse.objectKey,
             publicUrl: uploadUrlResponse.publicUrl,
@@ -761,31 +789,6 @@ export function useMobileSession({
             level: "info",
             metadata: { source, objectKey: uploadUrlResponse.objectKey },
           });
-        } catch (r2Error) {
-          // R2 PUT failed — if it's a CORS / network error (status 0), fall back
-          // to the server-proxied FormData upload rather than showing an error.
-          // Any other error (403 bad signature, 5xx, etc.) is re-thrown.
-          if (isRoomPreviewRequestError(r2Error) && r2Error.code === "network") {
-            r2PutFailed = true;
-            debugLog("network", "R2 PUT blocked (likely CORS) — retrying via server upload");
-            trackClientSessionEvent(sessionId, {
-              source: "mobile",
-              eventType: "room_upload_started",
-              level: "info",
-              metadata: { source, fallback: "server_proxy", reason: "r2_cors_fallback" },
-            });
-          } else {
-            throw r2Error;
-          }
-        }
-
-        if (r2PutFailed) {
-          // ── CORS fallback: proxy the upload through our Next.js server ───────
-          setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
-          response = await saveRoomPreviewSessionRoom(
-            sessionId,
-            { source, file: fileToUpload, previousRoomImageUrl: session.selectedRoom?.imageUrl },
-          );
         }
       } else {
         // ── Fallback: old FormData upload (development / non-R2) ────────────
