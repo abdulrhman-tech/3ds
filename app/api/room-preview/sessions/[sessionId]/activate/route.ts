@@ -1,5 +1,5 @@
 export const dynamic = "force-dynamic";
-import { type NextRequest, NextResponse, after } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { isSupportedLocale, LOCALE_COOKIE_NAME } from "@/lib/i18n/config";
 import { verifySessionToken } from "@/lib/room-preview/session-token";
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   response.cookies.set(MOBILE_TOKEN_COOKIE, token, cookieOptions(process.env.NODE_ENV));
   setLocaleFromRequest(response, request);
 
-  after(() => trackSessionEvent({
+  void trackSessionEvent({
     sessionId,
     source: "server",
     eventType: "qr_opened",
@@ -87,7 +87,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       method: "GET",
       userAgent: request.headers.get("user-agent") ?? null,
     },
-  }));
+  });
 
   log.info({ sessionId, host }, "Mobile activated via QR (GET)");
   return response;
@@ -121,7 +121,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   const response = NextResponse.json({ ok: true });
   response.cookies.set(MOBILE_TOKEN_COOKIE, token, cookieOptions(process.env.NODE_ENV));
 
-  after(() => trackSessionEvent({
+  void trackSessionEvent({
     sessionId,
     source: "server",
     eventType: "qr_opened",
@@ -130,7 +130,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       method: "POST",
       userAgent: request.headers.get("user-agent") ?? null,
     },
-  }));
+  });
 
   log.info({ sessionId }, "Mobile activated via client-side handler (POST)");
   return response;
