@@ -1,5 +1,5 @@
 export const dynamic = "force-dynamic";
-import { after, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
 import { guardSession } from "@/lib/room-preview/api-guard";
 import { trackEvent, getUserSessionIdForSession } from "@/lib/analytics/event-tracker";
@@ -199,7 +199,7 @@ export async function POST(
     "Direct upload confirmed and room saved",
   );
 
-  after(async () => {
+  void (async () => {
     const userSessionId = await getUserSessionIdForSession(sessionId);
     if (userSessionId) {
       await trackEvent({
@@ -212,7 +212,7 @@ export async function POST(
         },
       });
     }
-  });
+  })();
 
   await resolveSessionIssue({
     sessionId,
