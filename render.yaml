@@ -13,7 +13,9 @@ services:
       - key: STORAGE_PROVIDER
         value: r2
       - key: ENABLE_REDIS
-        value: "false"
+        value: "true"
+      - key: REDIS_URL
+        sync: false
       - key: ROOM_PREVIEW_DISABLE_RATE_LIMIT
         value: "true"
       - key: R2_BUCKET_NAME
