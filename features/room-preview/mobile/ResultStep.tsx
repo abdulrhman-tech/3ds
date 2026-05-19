@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef, type CSSProperties } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import Image from "next/image";
-import { Download, RotateCcw, Share2, ZoomIn, X } from "lucide-react";
+import { Download, Share2, ZoomIn, X } from "lucide-react";
 import { AnimatedButton } from "@/components/ui/AnimatedButton";
 import { useI18n } from "@/lib/i18n/provider";
 import { getProductTypeLabel } from "@/features/room-preview/shared/helpers";
@@ -11,29 +11,6 @@ import { trackClientSessionEvent } from "@/lib/room-preview/session-diagnostics-
 import type { RoomPreviewSession } from "@/lib/room-preview/types";
 
 // ── Confetti ───────────────────────────────────────────────────────────────────
-
-const CONFETTI_COLORS = ["#F1B434", "#00AFD7", "#003C71", "#FFD97D", "#ffffff"];
-
-function seededRandom(seed: number) {
-  const x = Math.sin(seed * 999) * 10000;
-  return x - Math.floor(x);
-}
-
-const CONFETTI_PARTICLES = Array.from({ length: 14 }).map((_, i) => {
-  const angle = (i * 360) / 14 + (seededRandom(i + 1) * 20 - 10);
-  const distance = 40 + seededRandom(i + 2) * 40;
-  const startRotation = seededRandom(i + 4) * 360;
-  return {
-    id: i,
-    x: Math.cos((angle * Math.PI) / 180) * distance,
-    y: Math.sin((angle * Math.PI) / 180) * distance,
-    size: 4 + seededRandom(i + 3) * 5,
-    startRotation,
-    endRotation: startRotation + (seededRandom(i + 5) * 180 - 90),
-    color: CONFETTI_COLORS[Math.floor(seededRandom(i + 6) * CONFETTI_COLORS.length)],
-    duration: 0.8 + seededRandom(i + 7) * 0.4,
-  };
-});
 
 // ── Render loading screen ──────────────────────────────────────────────────────
 
@@ -68,16 +45,22 @@ function RenderLoadingScreen({
 
   useEffect(() => {
     if (showResult) {
-      setProgress(100);
+      const progressTimer = setTimeout(() => setProgress(100), 0);
       // Wait for the logo clip transition (1300ms) to finish before fading out
-      const timer = setTimeout(() => setFadeOut(true), 1400);
-      return () => clearTimeout(timer);
+      const fadeTimer = setTimeout(() => setFadeOut(true), 1400);
+      return () => {
+        clearTimeout(progressTimer);
+        clearTimeout(fadeTimer);
+      };
     }
-    setFadeOut(false);
+    const fadeTimer = setTimeout(() => setFadeOut(false), 0);
     const timers = PROGRESS_STAGES.map(([pct, delay]) =>
       setTimeout(() => setProgress(pct), delay),
     );
-    return () => timers.forEach(clearTimeout);
+    return () => {
+      clearTimeout(fadeTimer);
+      timers.forEach(clearTimeout);
+    };
   }, [showResult]);
 
   useEffect(() => {
@@ -219,7 +202,6 @@ interface ResultStepProps {
   isSavingProduct: boolean;
   showResult: boolean;
   onCreateRender: () => Promise<void>;
-  onModify: () => void;
 }
 
 export default function ResultStep({
@@ -227,7 +209,6 @@ export default function ResultStep({
   isSavingProduct,
   showResult,
   onCreateRender,
-  onModify,
 }: ResultStepProps) {
   const { dir, locale, t } = useI18n();
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -375,7 +356,7 @@ export default function ResultStep({
 
           {/* Action bar — pinned at bottom */}
           <div
-            className={`grid gap-3 border-t border-white/10 bg-black/85 px-4 py-4 backdrop-blur-xl animate-in slide-in-from-bottom-2 fade-in duration-700 ${session.status === "completed" ? "grid-cols-2" : "grid-cols-3"}`}
+            className="grid grid-cols-2 gap-3 border-t border-white/10 bg-black/85 px-4 py-4 backdrop-blur-xl animate-in slide-in-from-bottom-2 fade-in duration-700"
             style={{ animationDelay: "500ms", animationFillMode: "backwards" }}
           >
             <a
@@ -407,18 +388,6 @@ export default function ResultStep({
               </span>
             </AnimatedButton>
 
-            {session.status !== "completed" ? (
-              <AnimatedButton
-                type="button"
-                className="flex flex-col items-center gap-2 rounded-[20px] border border-white/12 bg-white/08 py-4 transition hover:bg-white/14"
-                onClick={onModify}
-              >
-                <RotateCcw className="size-5 text-[#00AFD7]" />
-                <span className="text-[11px] font-semibold text-white/70">
-                  {locale === "ar" ? "تعديل" : "Modify"}
-                </span>
-              </AnimatedButton>
-            ) : null}
           </div>
         </div>,
         document.body,

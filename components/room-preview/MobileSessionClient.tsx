@@ -103,7 +103,6 @@ export default function MobileSessionClient({
     viewState,
     isSavingProduct,
     showResult,
-    setShowResult,
     roomSaveStatusLabel,
     error,
     successMessage,
@@ -271,7 +270,6 @@ export default function MobileSessionClient({
           isSavingProduct={isRenderingSession}
           showResult={showResult}
           onCreateRender={handleCreateRender}
-          onModify={() => setShowResult(false)}
         />
       ) : null}
     </div>

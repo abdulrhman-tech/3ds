@@ -211,8 +211,62 @@ export default function StatusPanel({
         </div>
       ) : null}
 
-      <div className="mt-10 grid grid-cols-1 gap-8 sm:grid-cols-2 lg:gap-10">
+      <div className="mt-10 grid grid-cols-1 gap-8">
         {(session.selectedRoom?.imageUrl || hasSelectedProduct) ? (
+          <div className="relative w-full overflow-hidden rounded-[28px] border border-white/10 bg-[#07101e] shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+            {session.selectedRoom?.imageUrl ? (
+              <div className="relative aspect-[16/9] min-h-[320px] w-full overflow-hidden">
+                <Image
+                  src={session.selectedRoom.imageUrl}
+                  alt={t.roomPreview.shared.selectedRoomThumbnail}
+                  fill
+                  sizes="100vw"
+                  className="object-cover"
+                  priority
+                />
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-transparent" />
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(0,175,215,0.16),transparent_38%)]" />
+              </div>
+            ) : (
+              <div className="relative aspect-[16/9] min-h-[320px] w-full bg-gradient-to-br from-[#06101d] via-[#0d2134] to-[#06101d]" />
+            )}
+
+            {hasSelectedProduct ? (
+              <div className={`absolute bottom-5 z-20 max-w-[min(520px,calc(100%-40px))] ${dir === "rtl" ? "right-5" : "left-5"}`}>
+                <div className={`flex items-center gap-4 rounded-2xl border border-white/14 bg-black/62 p-4 shadow-[0_18px_46px_rgba(0,0,0,0.45)] backdrop-blur-xl ${dir === "rtl" ? "flex-row-reverse text-right" : "text-left"}`}>
+                  <div className="relative h-24 w-20 shrink-0 overflow-hidden rounded-xl border border-white/16 bg-white/10">
+                    <Image
+                      src={selectedProduct?.imageUrl ?? ""}
+                      alt={selectedProduct?.name ?? t.roomPreview.shared.selectedProductThumbnail}
+                      fill
+                      sizes="80px"
+                      className="object-contain p-1.5"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="line-clamp-2 text-xl font-bold leading-tight text-white md:text-2xl">
+                      {selectedProduct?.name}
+                    </p>
+                    <div className={`mt-2 flex flex-wrap items-center gap-2 ${dir === "rtl" ? "justify-end" : ""}`}>
+                      {localizedProductType ? (
+                        <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-semibold text-white/70">
+                          {localizedProductType}
+                        </span>
+                      ) : null}
+                      {localizedBarcode ? (
+                        <span className="rounded-full border border-[#00AFD7]/25 bg-[#00AFD7]/12 px-3 py-1 font-mono text-xs font-semibold text-[#9BEAFF]">
+                          {localizedBarcode}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {false && (session.selectedRoom?.imageUrl || hasSelectedProduct) ? (
           <>
             {session.selectedRoom?.imageUrl ? (
               <div className="w-full rounded-2xl border border-[var(--border)] bg-[var(--bg-surface-2)] p-6 shadow-lg transition-transform hover:scale-[1.02] duration-300">
