@@ -131,6 +131,36 @@
 
 ---
 
+## 12. تفعيل Rate Limiting في Production
+
+| | |
+|---|---|
+| **المشكلة** | `ROOM_PREVIEW_DISABLE_RATE_LIMIT=true` كان موجوداً في `render.yaml` — أي أن الحماية من إساءة الاستخدام كانت مُعطَّلة كلياً في production. أي شخص كان يقدر يُرسل آلاف الطلبات للـ render API بدون قيود. |
+| **التحسين** | حذف المتغير من `render.yaml`؛ الـ rate limiter يعمل الآن تلقائياً مع Redis للحماية الموزَّعة. |
+| **الملفات** | `render.yaml` |
+| **الأثر** | الـ API محمي من الإساءة؛ الـ rate limiting يعمل على مستوى Redis (موزَّع وحقيقي). |
+
+---
+
+## 13. تنظيف next.config.ts وإصلاح تحذيرات Sentry
+
+| | |
+|---|---|
+| **المشكلة** | عند كل إقلاع للسيرفر كانت تظهر **7 تحذيرات** في الـ logs: خيارات `eslint` و`serverActions` غير معروفة في Next.js 16، وأربع خيارات Sentry مُهمَلة، وثلاث إعدادات Sentry ناقصة. |
+| **التحسين** | |
+| | • حذف `eslint` من `next.config.ts` (غير موجود في Next.js 16) |
+| | • حذف `serverActions` من `next.config.ts` (غير معتمد في Next.js 16) |
+| | • استبدال `disableLogger` بـ `webpack.treeshake.removeDebugLogging` |
+| | • استبدال `automaticVercelMonitors` بـ `webpack.automaticVercelMonitors` |
+| | • نقل Sentry client init من `sentry.client.config.ts` إلى `instrumentation-client.ts` |
+| | • إضافة `onRouterTransitionStart` لتتبع navigations |
+| | • إضافة `onRequestError` لتتبع أخطاء Server Components |
+| | • إنشاء `app/global-error.tsx` للأخطاء الجذرية |
+| **الملفات** | `next.config.ts`, `instrumentation.ts`, `instrumentation-client.ts`, `app/global-error.tsx` |
+| **الأثر** | الـ startup logs نظيفة بدون تحذيرات، وتغطية Sentry أكمل. |
+
+---
+
 ## ملخص الأثر الكلي
 
 | المقياس | قبل | بعد |
