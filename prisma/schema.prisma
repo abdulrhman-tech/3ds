@@ -72,6 +72,7 @@ model RoomPreviewSession {
   sessionIssues SessionIssue[]
 
   @@index([status])
+  @@index([status, createdAt])
   @@index([expiresAt])
   @@index([userSessionId])
   @@index([screenId])
@@ -96,6 +97,7 @@ model RenderJob {
   session RoomPreviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId, createdAt])
+  @@index([status, createdAt])
 }
 
 model SessionEvent {
@@ -116,6 +118,7 @@ model SessionEvent {
   @@index([sessionId, timestamp])
   @@index([eventType])
   @@index([level])
+  @@index([level, timestamp(sort: Desc)])
   @@index([source])
   @@map("session_events")
 }
