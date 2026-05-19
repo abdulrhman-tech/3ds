@@ -9,6 +9,10 @@
  *
  * @see https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
  */
+import * as Sentry from "@sentry/nextjs";
+
+export const onRequestError = Sentry.captureRequestError;
+
 declare global {
   // eslint-disable-next-line no-var
   var __cleanupInterval: ReturnType<typeof setInterval> | undefined;
