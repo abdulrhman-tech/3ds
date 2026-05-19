@@ -16,8 +16,6 @@ services:
         value: "true"
       - key: REDIS_URL
         sync: false
-      - key: ROOM_PREVIEW_DISABLE_RATE_LIMIT
-        value: "true"
       - key: R2_BUCKET_NAME
         value: 3rds
       - key: R2_PUBLIC_URL
