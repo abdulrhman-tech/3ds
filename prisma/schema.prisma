@@ -1,0 +1,254 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Screens ──────────────────────────────────────────────────────────────────
+
+/// A registered physical showroom screen.
+/// Each screen has its own daily render budget and cooldown, so one screen's
+/// usage cannot exhaust another screen's quota.
+model Screen {
+  id           String    @id @default(cuid())
+  name         String
+  location     String?
+  /// SHA-256 hash of the screen's secret token (token shown once at creation).
+  secretHash   String    @unique
+  /// Max renders allowed per calendar day (UTC). Admin-configurable.
+  dailyBudget  Int       @default(15)
+  isActive     Boolean   @default(true)
+  /// Set to now() each time a render starts. Used to enforce cooldown in DB
+  /// (Redis cooldown is belt-and-suspenders; this survives Redis restarts).
+  lastRenderAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions RoomPreviewSession[]
+}
+
+// ─── Room Preview ─────────────────────────────────────────────────────────────
+
+model RoomPreviewSession {
+  id              String  @id @default(cuid())
+  status          String
+  mobileConnected Boolean @default(false)
+  renderCount     Int     @default(0)
+
+  selectedRoom    Json?
+  selectedProduct Json?
+  renderResult    Json?
+
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Which physical screen created this session. Null for unregistered screens.
+  screenId String?
+  screen   Screen? @relation(fields: [screenId], references: [id])
+
+  /// SHA-256(roomImageUrl::productId) of the last successful render.
+  /// Used to return a cached result when the customer re-renders with the same inputs.
+  lastRenderHash String?
+
+  userSessionId String?      @unique
+  userSession   UserSession? @relation(fields: [userSessionId], references: [id])
+
+  /// Linked after customer gate completes. Null for employee sessions.
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  /// Last time the mobile client sent a heartbeat ping. Null until first ping.
+  lastMobileSeenAt DateTime?
+  /// Last time the screen client sent a heartbeat ping. Null until first ping.
+  lastScreenSeenAt DateTime?
+
+  renderJobs    RenderJob[]
+  sessionEvents SessionEvent[]
+  sessionIssues SessionIssue[]
+
+  @@index([status])
+  @@index([status, createdAt])
+  @@index([expiresAt])
+  @@index([userSessionId])
+  @@index([screenId])
+  @@index([customerId])
+}
+
+model RenderJob {
+  id        String @id @default(cuid())
+  sessionId String
+  status    String
+
+  input         Json
+  result        Json?
+  failureReason String?
+
+  /// SHA-256(roomImageUrl::productId) — used for budget counting and audit.
+  inputHash String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session RoomPreviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([status, createdAt])
+}
+
+model SessionEvent {
+  id           String   @id @default(cuid())
+  sessionId    String
+  timestamp    DateTime @default(now())
+  source       String
+  eventType    String
+  level        String   @default("info")
+  statusBefore String?
+  statusAfter  String?
+  code         String?
+  message      String?
+  metadata     Json?
+
+  session RoomPreviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, timestamp])
+  @@index([eventType])
+  @@index([level])
+  @@index([level, timestamp(sort: Desc)])
+  @@index([source])
+  @@map("session_events")
+}
+
+model SessionIssue {
+  id                 String   @id @default(cuid())
+  sessionId          String
+  issueType          String
+  dedupeKey          String?  @unique
+  severity           String
+  status             String   @default("open")
+  userVisible        Boolean  @default(false)
+  customerMessageKey String?
+  adminMessage       String
+  recommendedAction  String?
+  firstSeenAt        DateTime @default(now())
+  lastSeenAt         DateTime @default(now())
+  count              Int      @default(1)
+  metadata           Json?
+
+  session RoomPreviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([issueType])
+  @@index([severity])
+  @@index([lastSeenAt])
+  @@map("session_issues")
+}
+
+// ─── User Identity (Pre-Access Gate) ─────────────────────────────────────────
+
+/// An identified visitor who passed through the pre-access gate.
+/// One-to-one with RoomPreviewSession (userSession.roomSession).
+model UserSession {
+  id           String   @id @default(cuid())
+  name         String
+  /// "customer" | "employee"
+  role         String
+  /// Normalized E.164 phone — set when role = "customer"
+  phone        String?
+  /// ISO 3166-1 alpha-2 country code, e.g. "SA"
+  countryCode  String?
+  /// E.164 dial prefix, e.g. "+966"
+  dialCode     String?
+  /// Set when role = "employee"
+  employeeCode String?
+  /// Best-effort client IP, captured at gate submission time.
+  ip           String?
+  createdAt    DateTime @default(now())
+
+  roomSession RoomPreviewSession?
+  events      Event[]
+
+  @@index([role])
+  @@index([createdAt])
+}
+
+// ─── Customer Memory ──────────────────────────────────────────────────────────
+
+/// A returning customer identified by their E.164 phone number.
+/// Created/refreshed on every successful customer gate completion.
+/// Expires after 60 days of inactivity (expiresAt = lastSeenAt + 60d).
+model Customer {
+  id          String   @id @default(cuid())
+  name        String
+  /// Primary identifier — normalized E.164, e.g. "+966501234567"
+  phoneE164   String   @unique
+  /// ISO 3166-1 alpha-2 country code, e.g. "SA"
+  countryCode String
+  /// E.164 dial prefix stored for convenience, e.g. "+966"
+  dialCode    String
+  lastSeenAt  DateTime @default(now())
+  /// Refreshed to now+60d on every successful login.
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sessions    RoomPreviewSession[]
+  experiences CustomerExperience[]
+
+  @@index([phoneE164])
+  @@index([expiresAt])
+}
+
+/// One render result saved per customer per completed session.
+/// Persists independently of session lifetime (no FK cascade from session).
+model CustomerExperience {
+  id             String  @id @default(cuid())
+  customerId     String
+  /// Reference only — not a FK so cleanup of sessions doesn't cascade here.
+  sessionId      String
+  roomImageUrl   String?
+  roomImageKey   String?
+  productId      String?
+  productName    String?
+  resultImageUrl String?
+  resultImageKey String?
+  createdAt      DateTime @default(now())
+  /// Mirrors Customer.expiresAt set at save time.
+  expiresAt      DateTime
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@index([createdAt])
+  @@index([expiresAt])
+}
+
+// ─── Event Tracking ───────────────────────────────────────────────────────────
+
+/// A single tracked event in a user's journey.
+/// Written fire-and-forget — never blocks the main request pipeline.
+model Event {
+  id            String   @id @default(cuid())
+  userSessionId String
+  /// FK to RoomPreviewSession.id — available after gate completes.
+  sessionId     String?
+  /// e.g. "user_entered" | "qr_scanned" | "room_opened" |
+  ///       "render_started" | "render_completed" | "render_failed"
+  eventType     String
+  /// FK to RenderJob.id — set for render_* events.
+  renderJobId   String?
+  /// Arbitrary JSON payload (room source, device UA, duration, etc.)
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  userSession UserSession @relation(fields: [userSessionId], references: [id], onDelete: Cascade)
+
+  @@index([userSessionId])
+  @@index([sessionId])
+  @@index([eventType])
+  @@index([createdAt])
+}

@@ -1,0 +1,82 @@
+import "server-only";
+
+type EnvSpec = {
+  /** Environment variable name */
+  key: string;
+  /** One-line description shown in the error message */
+  hint: string;
+  /**
+   * When true the variable is only enforced when NODE_ENV === "production".
+   * Dev fallbacks exist in code for these; they must be set before going live.
+   */
+  productionOnly?: boolean;
+};
+
+const REQUIRED: EnvSpec[] = [
+  {
+    key: "DATABASE_URL",
+    hint: 'PostgreSQL connection string, e.g. "postgresql://user:pass@host:5432/db"',
+  },
+  {
+    key: "SESSION_TOKEN_SECRET",
+    hint: "HMAC secret for session token signing - generate with: openssl rand -hex 32",
+    productionOnly: true,
+  },
+  {
+    key: "CLEANUP_SECRET",
+    hint: "Secret for the /api/room-preview/cleanup cron endpoint - generate with: openssl rand -hex 32",
+    productionOnly: true,
+  },
+  {
+    key: "NEXT_PUBLIC_BASE_URL",
+    hint: 'Public URL of the deployed app, e.g. "https://ibdaa360.com" - required to generate QR codes',
+    productionOnly: true,
+  },
+  {
+    key: "ADMIN_JWT_SECRET",
+    hint: "HMAC secret for admin session cookies - generate with: openssl rand -hex 32",
+    productionOnly: true,
+  },
+];
+
+/**
+ * Validate that all required environment variables are present.
+ *
+ * Call once during server startup (instrumentation.ts -> register()).
+ * In production, throws with a clear, actionable message listing every
+ * missing variable so deployment fails immediately. In development, logs the
+ * same missing-variable details as a warning and lets UI-only pages run.
+ *
+ * Variables marked `productionOnly` are only enforced when
+ * NODE_ENV === "production" - dev fallbacks exist in code for these.
+ */
+export function validateEnv(): void {
+  const isProd = process.env.NODE_ENV === "production";
+  const missing: string[] = [];
+
+  for (const { key, hint, productionOnly } of REQUIRED) {
+    if (productionOnly && !isProd) continue;
+    if (!process.env[key]) {
+      missing.push(`  ${key}\n    -> ${hint}`);
+    }
+  }
+
+  if (missing.length > 0) {
+    const message =
+      `[startup] Server cannot start - missing required environment variable(s):\n\n` +
+      missing.join("\n\n") +
+      `\n\nSee .env.example for full documentation on each variable.`;
+
+    if (!isProd) {
+      console.warn(
+        message.replace(
+          "[startup] Server cannot start",
+          "[startup] Development server continuing",
+        ),
+      );
+      return;
+    }
+
+    throw new Error(message);
+  }
+}

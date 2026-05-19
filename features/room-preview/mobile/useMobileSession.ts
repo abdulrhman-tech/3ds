@@ -1,0 +1,1316 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useI18n } from "@/lib/i18n/provider";
+import {
+  connectRoomPreviewSession,
+  fetchRoomPreviewSession,
+  getRoomPreviewErrorLogDetails,
+  isRoomPreviewRequestError,
+  createRenderForSession,
+} from "@/lib/room-preview/session-client";
+import { saveRoomPreviewSessionProduct } from "@/lib/room-preview/product-service";
+import {
+  saveRoomPreviewSessionRoom,
+  requestDirectUploadUrl,
+  uploadFileToR2,
+  confirmDirectUpload,
+} from "@/lib/room-preview/room-service";
+import { compressRoomImage } from "@/lib/room-preview/image-compress";
+import { pollForRenderResult } from "@/lib/room-preview/session-polling";
+import { getCustomerRecoveryMessage, type CustomerRecoveryMessage } from "@/lib/room-preview/customer-recovery";
+import { trackClientSessionEvent } from "@/lib/room-preview/session-diagnostics-client";
+import { useDebugLog } from "@/features/room-preview/mobile/debug";
+import type { LogEntry } from "@/features/room-preview/mobile/debug";
+import { useMobileDiagnostics } from "@/features/room-preview/mobile/useMobileDiagnostics";
+import { useMobileHeartbeat } from "@/features/room-preview/mobile/useMobileHeartbeat";
+import type { TranslationDictionary } from "@/lib/i18n/dictionaries";
+import type {
+  RoomPreviewProduct,
+  RoomPreviewRoomSource,
+  RoomPreviewSession,
+} from "@/lib/room-preview/types";
+
+const MOBILE_NETWORK_ERROR_MESSAGE =
+  "تعذر الاتصال بالسيرفر، تأكد أن الجوال والكمبيوتر على نفس الشبكة";
+const MOBILE_INITIAL_LOAD_MAX_ATTEMPTS = 3;
+const MOBILE_INITIAL_LOAD_RETRY_DELAY_MS = 1_500;
+const DEV_PREVIEW_ROOM_STORAGE_KEY = "room-preview:dev-preview-room";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type MobileSessionViewState = "loading" | "ready" | "not_found" | "expired" | "failed";
+export type SaveStatus = "idle" | "success" | "error";
+
+export interface UseMobileSessionReturn {
+  // i18n (for use in the orchestrator and step components)
+  t: TranslationDictionary;
+  locale: "ar" | "en";
+  dir: "ltr" | "rtl";
+  formatMessage: (template: string, params: Record<string, string>) => string;
+
+  // State
+  session: RoomPreviewSession | null;
+  viewState: MobileSessionViewState;
+  isConnecting: boolean;
+  isSavingRoom: boolean;
+  isSavingProduct: boolean;
+  showResult: boolean;
+  setShowResult: (v: boolean) => void;
+  roomSaveStatusLabel: string | null;
+  error: string | null;
+  successMessage: string | null;
+  roomSaveStatus: SaveStatus;
+  productSaveStatus: SaveStatus;
+  recoveryMessage: CustomerRecoveryMessage | null;
+  clearRecoveryMessage: () => void;
+
+  // Derived
+  isConnected: boolean;
+  hasSavedRoom: boolean;
+  hasSavedProduct: boolean;
+  localProductId: string | null;
+  sectionAlignClass: string;
+  fileInputSpacingClass: string;
+  inlineSpinnerSpacingClass: string;
+
+  // Actions
+  retry: () => void;
+  handleConnect: () => Promise<void>;
+  handleFileSelection: (source: Extract<RoomPreviewRoomSource, "camera" | "gallery">, file: File | null) => Promise<void>;
+  handleProductSelect: (productId: string) => void;
+  handleCreateRender: () => Promise<void>;
+
+  // Heartbeat
+  heartbeatConnected: boolean;
+  heartbeatFailedCount: number;
+  heartbeatLastSuccessAt: number | null;
+
+  // Debug
+  debugEntries: LogEntry[];
+  clearDebugLog: () => void;
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+function isSessionConnected(session: RoomPreviewSession) {
+  return session.mobileConnected;
+}
+
+function createDevPreviewSession(
+  selectedRoom: RoomPreviewSession["selectedRoom"] = null,
+  selectedProduct: RoomPreviewSession["selectedProduct"] = null,
+): RoomPreviewSession {
+  const now = new Date().toISOString();
+
+  return {
+    id: "dev-preview-session",
+    status: selectedProduct?.id
+      ? "product_selected"
+      : selectedRoom?.imageUrl
+        ? "room_selected"
+        : "mobile_connected",
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: null,
+    mobileConnected: true,
+    selectedRoom,
+    selectedProduct,
+    renderResult: null,
+  };
+}
+
+function getViewStateFromError(
+  error: unknown,
+  t: TranslationDictionary,
+): { message: string; state: Exclude<MobileSessionViewState, "loading" | "ready"> } {
+  if (isRoomPreviewRequestError(error)) {
+    if (error.code === "not_found") return { state: "not_found", message: t.roomPreview.mobile.invalidLink };
+    if (error.code === "expired")   return { state: "expired",   message: t.roomPreview.mobile.expiredLink };
+    return { state: "failed", message: error.message };
+  }
+  return { state: "failed", message: t.roomPreview.mobile.loadFailed };
+}
+
+function createActionErrorMessage(error: unknown, fallbackMessage: string) {
+  if (isRoomPreviewRequestError(error)) return error.message;
+  return error instanceof Error ? error.message : fallbackMessage;
+}
+
+function wait(durationMs: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+}
+
+function isNetworkInterrupted(error: unknown) {
+  return (
+    (isRoomPreviewRequestError(error) && error.code === "network") ||
+    (error instanceof TypeError && error.message === "Failed to fetch")
+  );
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
+export function useMobileSession({
+  devPreviewMode = false,
+  products = [],
+  sessionId,
+}: {
+  devPreviewMode?: boolean;
+  products?: RoomPreviewProduct[];
+  sessionId: string;
+}): UseMobileSessionReturn {
+  const { dir, formatMessage, locale, t } = useI18n();
+
+  const [session,             setSession]            = useState<RoomPreviewSession | null>(null);
+  const [viewState,           setViewState]          = useState<MobileSessionViewState>("loading");
+  const [loadAttempt,         setLoadAttempt]        = useState(0);
+  const [isConnecting,        setIsConnecting]       = useState(false);
+  const [isSavingRoom,        setIsSavingRoom]       = useState(false);
+  const [isSavingProduct,     setIsSavingProduct]    = useState(false);
+  const [localProductId,      setLocalProductId]     = useState<string | null>(null);
+  const productDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showResult,          setShowResult]         = useState(false);
+  const [roomSaveStatusLabel, setRoomSaveStatusLabel]= useState<string | null>(null);
+  const [error,               setError]              = useState<string | null>(null);
+  const [successMessage,      setSuccessMessage]     = useState<string | null>(null);
+  const [roomSaveStatus,      setRoomSaveStatus]     = useState<SaveStatus>("idle");
+  const [productSaveStatus,   setProductSaveStatus]  = useState<SaveStatus>("idle");
+  const [recoveryMessage,     setRecoveryMessage]    = useState<CustomerRecoveryMessage | null>(null);
+  const renderRequestInFlightRef = useRef(false);
+  const devRoomObjectUrlRef = useRef<string | null>(null);
+  // Always-current ref so the popstate handler reads fresh session state
+  // without being re-registered on every render.
+  const sessionRef = useRef<RoomPreviewSession | null>(null);
+  sessionRef.current = session;
+
+  const { entries: debugEntries, add: debugLog, clear: clearDebugLog } = useDebugLog();
+  const { trackFetch, updateStatus } = useMobileDiagnostics(sessionId, devPreviewMode);
+  const {
+    isConnected: heartbeatConnected,
+    failedCount: heartbeatFailedCount,
+    lastSuccessAt: heartbeatLastSuccessAt,
+  } = useMobileHeartbeat(sessionId, session?.status, devPreviewMode);
+
+  // Track the first moment the heartbeat becomes unreachable (true → false).
+  // Fire-once per disconnection event so we never spam the timeline.
+  const prevHeartbeatConnectedRef = useRef(true);
+  useEffect(() => {
+    const wasConnected = prevHeartbeatConnectedRef.current;
+    prevHeartbeatConnectedRef.current = heartbeatConnected;
+    if (!heartbeatConnected && wasConnected) {
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "weak_connection_warning_shown",
+        level: "warning",
+        metadata: { failedCount: heartbeatFailedCount },
+      });
+    }
+  }, [heartbeatConnected, heartbeatFailedCount, sessionId]);
+
+  // ── result_seen_mobile ────────────────────────────────────────────────────
+  // Fires once per unique render result when the result UI first becomes
+  // visible. The ref (keyed by imageUrl) prevents duplicate events from
+  // polling re-renders, back-navigation recovery, or repeated setShowResult
+  // calls with the same result.
+  const resultSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!showResult || !session) return;
+    const imageUrl = session.renderResult?.imageUrl;
+    if (!imageUrl) return;
+    if (resultSeenRef.current === imageUrl) return;
+    resultSeenRef.current = imageUrl;
+    trackClientSessionEvent(session.id, {
+      source: "mobile",
+      eventType: "result_seen_mobile",
+      level: "info",
+      metadata: {
+        status: session.status,
+        hasResultImage: true,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }, [showResult, session]);
+
+  // Keep the diagnostics status ref current for all async event listeners
+  useEffect(() => {
+    updateStatus(session?.status ?? null);
+    if (session?.status) {
+      console.info("[room-preview] mobile_session_status_changed", {
+        mobileConnected: session.mobileConnected,
+        sessionId,
+        status: session.status,
+      });
+    }
+  }, [session?.mobileConnected, session?.status, sessionId, updateStatus]);
+
+  // ── Debounce cleanup ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (productDebounceRef.current) clearTimeout(productDebounceRef.current);
+      if (devRoomObjectUrlRef.current) URL.revokeObjectURL(devRoomObjectUrlRef.current);
+    };
+  }, []);
+
+  // ── Lifecycle logging ────────────────────────────────────────────────────────
+  useEffect(() => {
+    debugLog("info", "MobileSessionClient mounted", `sessionId: ${sessionId}`);
+    // mount_page_mounted is already sent by useMobileDiagnostics — no duplicate needed.
+    return () => {
+      debugLog("warn", "MobileSessionClient unmounting");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Browser Back guard ───────────────────────────────────────────────────────
+  // Push a duplicate history entry on mount. When the user presses Back, the
+  // browser moves to the original (same URL) and fires popstate — we catch it,
+  // re-push to keep the guard alive, then re-fetch the authoritative session
+  // state and update the view accordingly.
+  useEffect(() => {
+    if (devPreviewMode) return;
+
+    window.history.pushState(null, "");
+
+    function handlePopState() {
+      // Restore guard so every subsequent Back press is also caught.
+      window.history.pushState(null, "");
+
+      const currentPath = window.location.pathname;
+
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "back_pressed",
+        level: "info",
+        metadata: {
+          currentPath,
+          currentStatus: sessionRef.current?.status ?? null,
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      void (async () => {
+        try {
+          const fresh = await fetchRoomPreviewSession(sessionId);
+          setSession(fresh);
+
+          const { status } = fresh;
+
+          if (status === "expired" || status === "completed") {
+            setViewState("expired");
+            setError(null);
+          } else if (status === "failed") {
+            setViewState("failed");
+          } else {
+            setViewState("ready");
+            if (status === "result_ready" && fresh.renderResult?.imageUrl) {
+              setShowResult(true);
+            }
+          }
+
+          // Confirm to the user that we kept them in flow.
+          const msg = "أعدناك إلى الخطوة الصحيحة للحفاظ على تجربتك";
+          setSuccessMessage(msg);
+          setTimeout(
+            () => setSuccessMessage((prev) => (prev === msg ? null : prev)),
+            4_000,
+          );
+
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "redirected_to_correct_step",
+            level: "info",
+            metadata: {
+              fromPath: currentPath,
+              toPath: currentPath,
+              status,
+              reason: "browser_back_recovery",
+            },
+          });
+        } catch (err) {
+          if (isRoomPreviewRequestError(err)) {
+            if (err.code === "not_found") setViewState("not_found");
+            else if (err.code === "expired") setViewState("expired");
+            // Network error: silently stay on current view — Back guard must
+            // never crash or freeze the UI.
+          }
+        }
+      })();
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [devPreviewMode, sessionId]);
+
+  // ── Initial session load ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let active = true;
+
+    async function loadSession() {
+      setViewState("loading");
+      setError(null);
+      setSuccessMessage(null);
+      setRoomSaveStatus("idle");
+      setProductSaveStatus("idle");
+      setRoomSaveStatusLabel(null);
+      setRecoveryMessage(null);
+
+      if (devPreviewMode) {
+        let storedRoom: RoomPreviewSession["selectedRoom"] = null;
+        try {
+          const rawRoom = sessionStorage.getItem(DEV_PREVIEW_ROOM_STORAGE_KEY);
+          storedRoom = rawRoom ? JSON.parse(rawRoom) as RoomPreviewSession["selectedRoom"] : null;
+        } catch {
+          storedRoom = null;
+        }
+
+        const devSession = createDevPreviewSession(storedRoom);
+        debugLog("success", "Loaded local dev preview session");
+        setSession(devSession);
+        setViewState("ready");
+        return;
+      }
+
+      const url = `/api/room-preview/sessions/${sessionId}`;
+      for (let attempt = 1; attempt <= MOBILE_INITIAL_LOAD_MAX_ATTEMPTS; attempt += 1) {
+        const isLastAttempt = attempt === MOBILE_INITIAL_LOAD_MAX_ATTEMPTS;
+
+        debugLog("network", `GET ${url}`, `attempt #${attempt}`);
+        trackFetch(); // timestamps this fetch; emits MOBILE_EXCESSIVE_POLLING if burst detected
+        trackClientSessionEvent(sessionId, {
+          source: "mobile",
+          eventType: "mobile_fetch_started",
+          level: "info",
+          metadata: { attempt, loadAttempt: loadAttempt + 1, url },
+        });
+
+        try {
+          const nextSession = await fetchRoomPreviewSession(sessionId);
+
+        if (!active) return;
+
+        let finalSession = nextSession;
+
+        // Auto-connect here to skip the manual "I am connected" button on mobile
+        if (!isSessionConnected(nextSession)) {
+          const connectUrl = `/api/room-preview/sessions/${sessionId}/connect`;
+          debugLog("network", `Auto-connecting session: ${sessionId}`);
+          console.info("[room-preview] mobile_connect_started", {
+            mode: "auto",
+            sessionId,
+            statusBefore: nextSession.status,
+            url: connectUrl,
+          });
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "mobile_connect_started",
+            level: "info",
+            statusBefore: nextSession.status,
+            metadata: { attempt, mode: "auto", url: connectUrl },
+          });
+          try {
+            finalSession = await connectRoomPreviewSession(sessionId);
+            console.info("[room-preview] mobile_connect_success", {
+              mode: "auto",
+              sessionId,
+              statusAfter: finalSession.status,
+              url: connectUrl,
+            });
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "mobile_connect_success",
+              level: "info",
+              statusAfter: finalSession.status,
+              metadata: { attempt, mode: "auto", url: connectUrl },
+            });
+            debugLog("success", "Auto-connected successfully");
+          } catch (autoConnectError) {
+            console.error("[room-preview] mobile_connect_failed", {
+              error: autoConnectError instanceof Error ? autoConnectError.message : String(autoConnectError),
+              mode: "auto",
+              sessionId,
+              url: connectUrl,
+            });
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "mobile_connect_failed",
+              level: "error",
+              code: isRoomPreviewRequestError(autoConnectError)
+                ? autoConnectError.code
+                : isNetworkInterrupted(autoConnectError)
+                  ? "NETWORK_INTERRUPTED"
+                  : null,
+              message: autoConnectError instanceof Error ? autoConnectError.message : String(autoConnectError),
+              statusBefore: nextSession.status,
+              metadata: { attempt, mode: "auto", url: connectUrl },
+            });
+            debugLog("error", `Failed to auto-connect session: ${autoConnectError instanceof Error ? autoConnectError.message : String(autoConnectError)}`);
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "mobile_auto_connect_failed",
+              level: "error",
+              code: isNetworkInterrupted(autoConnectError) ? "NETWORK_INTERRUPTED" : null,
+              message: autoConnectError instanceof Error ? autoConnectError.message : String(autoConnectError),
+              metadata: { attempt, loadAttempt: loadAttempt + 1, url: connectUrl },
+            });
+            throw autoConnectError;
+          }
+        }
+
+        debugLog("success", `Session loaded — status: ${finalSession.status}`);
+        debugLog("state",   `viewState → ready`);
+        setSession(finalSession);
+        setViewState("ready");
+        return;
+      } catch (loadError) {
+        if (!active) return;
+
+        const networkInterrupted = isNetworkInterrupted(loadError);
+        const failedUrl =
+          isRoomPreviewRequestError(loadError) && loadError.status === 401
+            ? `/api/room-preview/sessions/${sessionId}/connect`
+            : url;
+        const isTypeFailed =
+          networkInterrupted;
+
+        debugLog(
+          "error",
+          isTypeFailed
+            ? "TypeError: Failed to fetch (firewall / wrong network?)"
+            : `Fetch error: ${loadError instanceof Error ? loadError.message : String(loadError)}`,
+          loadError instanceof Error
+            ? `code: ${isRoomPreviewRequestError(loadError) ? loadError.code : "n/a"} url: ${failedUrl}`
+            : `url: ${failedUrl}`,
+        );
+
+        trackClientSessionEvent(sessionId, {
+          source: "mobile",
+          eventType: "mobile_fetch_failed_with_url",
+          level: "error",
+          code: networkInterrupted ? "NETWORK_INTERRUPTED" : null,
+          message: loadError instanceof Error ? loadError.message : String(loadError),
+          metadata: { attempt, loadAttempt: loadAttempt + 1, url: failedUrl },
+        });
+
+        if (networkInterrupted && !isLastAttempt) {
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "mobile_retry_started",
+            level: "warning",
+            code: "NETWORK_INTERRUPTED",
+            message: "Retrying mobile session fetch without reloading the page.",
+            metadata: {
+              attempt,
+              nextAttempt: attempt + 1,
+              retryDelayMs: MOBILE_INITIAL_LOAD_RETRY_DELAY_MS,
+              url: failedUrl,
+            },
+          });
+          await wait(MOBILE_INITIAL_LOAD_RETRY_DELAY_MS);
+          continue;
+        }
+
+        if (networkInterrupted) {
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "mobile_retry_exhausted",
+            level: "error",
+            code: "NETWORK_INTERRUPTED",
+            message: "Mobile session fetch failed after all in-page retry attempts.",
+            metadata: { attempts: MOBILE_INITIAL_LOAD_MAX_ATTEMPTS, url: failedUrl },
+          });
+        }
+
+        const failure = networkInterrupted
+          ? { state: "failed" as const, message: MOBILE_NETWORK_ERROR_MESSAGE }
+          : getViewStateFromError(loadError, t);
+        trackClientSessionEvent(sessionId, {
+          source: "mobile",
+          eventType: "mobile_fetch_failed",
+          level: "error",
+          code: networkInterrupted ? "NETWORK_INTERRUPTED" : null,
+          message: loadError instanceof Error ? loadError.message : String(loadError),
+          metadata: { attempt, loadAttempt: loadAttempt + 1, url: failedUrl },
+        });
+        debugLog("state", `viewState → ${failure.state}`);
+        setSession(null);
+        setViewState(failure.state);
+        setError(failure.message);
+        return;
+      }
+    }
+    }
+
+    void loadSession();
+    return () => { active = false; };
+  }, [devPreviewMode, loadAttempt, sessionId, t]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (devPreviewMode) return;
+
+    const shouldResumeRender =
+      session?.status === "ready_to_render" || session?.status === "rendering";
+
+    if (!session || !shouldResumeRender || isSavingProduct || showResult) {
+      return;
+    }
+
+    let active = true;
+    setIsSavingProduct(true);
+    setError(null);
+    setSuccessMessage(null);
+    debugLog("network", `Resuming render polling  sessionId: ${session.id}`);
+
+    pollForRenderResult(session.id, undefined, {
+      onUpdate(nextSession) {
+        if (!active) return;
+        setSession(nextSession);
+      },
+    })
+      .then((finalSession) => {
+        if (!active) return;
+        setSession(finalSession);
+
+        if (finalSession.status === "result_ready") {
+          setShowResult(true);
+          setSuccessMessage(t.roomPreview.mobile.product.saveSuccess);
+          debugLog("success", "Render complete after resume");
+        } else {
+          debugLog("error", "Render pipeline failed after resume");
+          setError(t.roomPreview.mobile.loadFailed);
+        }
+      })
+      .catch((renderError) => {
+        if (!active) return;
+        const failure = getViewStateFromError(renderError, t);
+        debugLog("error", `Render resume error: ${renderError instanceof Error ? renderError.message : String(renderError)}`);
+        setError(failure.message);
+      })
+      .finally(() => {
+        if (!active) return;
+        setIsSavingProduct(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devPreviewMode, session?.id, showResult]);
+
+  // ── Handlers ─────────────────────────────────────────────────────────────────
+
+  const handleConnect = useCallback(async () => {
+    if (isConnecting || !session || isSessionConnected(session)) return;
+
+    trackClientSessionEvent(sessionId, {
+      source: "mobile",
+      eventType: "mobile_tap_detected",
+      level: "info",
+      metadata: { target: "connect" },
+    });
+    setIsConnecting(true);
+    setError(null);
+    setSuccessMessage(null);
+    setRoomSaveStatus("idle");
+    setProductSaveStatus("idle");
+    setRoomSaveStatusLabel(null);
+
+    if (devPreviewMode) {
+      setSession({
+        ...session,
+        mobileConnected: true,
+        status: session.selectedProduct?.id
+          ? "product_selected"
+          : session.selectedRoom?.imageUrl
+            ? "room_selected"
+            : "mobile_connected",
+      });
+      setSuccessMessage(t.roomPreview.mobile.connectedSuccess);
+      setIsConnecting(false);
+      return;
+    }
+
+    debugLog("network", `POST /connect  sessionId: ${sessionId}`);
+    console.info("[room-preview] mobile_connect_started", {
+      mode: "manual",
+      sessionId,
+      statusBefore: session.status,
+    });
+    trackClientSessionEvent(sessionId, {
+      source: "mobile",
+      eventType: "mobile_connect_started",
+      level: "info",
+      statusBefore: session.status,
+      metadata: { mode: "manual" },
+    });
+
+    try {
+      const connectedSession = await connectRoomPreviewSession(sessionId);
+      console.info("[room-preview] mobile_connect_success", {
+        mode: "manual",
+        sessionId,
+        statusAfter: connectedSession.status,
+      });
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "mobile_connect_success",
+        level: "info",
+        statusAfter: connectedSession.status,
+        metadata: { mode: "manual" },
+      });
+      setSession({
+        ...session,
+        mobileConnected: true,
+        status:
+          session.selectedProduct?.id && session.selectedProduct?.imageUrl
+            ? "product_selected"
+            : session.selectedRoom?.imageUrl
+              ? "room_selected"
+              : "mobile_connected",
+      });
+      setSuccessMessage(t.roomPreview.mobile.connectedSuccess);
+      debugLog("success", "Session connected");
+    } catch (connectError) {
+      const failure = getViewStateFromError(connectError, t);
+      console.error("[room-preview] mobile_connect_failed", {
+        error: connectError instanceof Error ? connectError.message : String(connectError),
+        mode: "manual",
+        sessionId,
+      });
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "mobile_connect_failed",
+        level: "error",
+        code: isRoomPreviewRequestError(connectError)
+          ? connectError.code
+          : null,
+        message: connectError instanceof Error ? connectError.message : String(connectError),
+        statusBefore: session.status,
+        metadata: { mode: "manual" },
+      });
+      debugLog("error", `Connect failed: ${connectError instanceof Error ? connectError.message : String(connectError)}`);
+
+      if (failure.state === "expired" || failure.state === "not_found") {
+        setSession(null);
+        setViewState(failure.state);
+        setError(failure.message);
+        debugLog("state", `viewState → ${failure.state}`);
+      } else {
+        setError(createActionErrorMessage(connectError, t.roomPreview.mobile.connectFailed));
+      }
+    } finally {
+      setIsConnecting(false);
+    }
+  }, [devPreviewMode, isConnecting, session, sessionId, t, debugLog]);
+
+  const handleFileSelection = useCallback(async (
+    source: Extract<RoomPreviewRoomSource, "camera" | "gallery">,
+    file: File | null,
+  ) => {
+    if (!file || isSavingRoom || !session) {
+      if (!file) {
+        console.warn("[room-preview] Missing uploaded file", { sessionId, source });
+        debugLog("warn", `handleFileSelection: no file selected (source: ${source})`);
+        setRoomSaveStatus("error");
+      }
+      return;
+    }
+
+    trackClientSessionEvent(sessionId, {
+      source: "mobile",
+      eventType: "mobile_tap_detected",
+      level: "info",
+      metadata: { target: "room_upload", source, fileSize: file.size, fileType: file.type },
+    });
+    trackClientSessionEvent(sessionId, {
+      source: "mobile",
+      eventType: "room_upload_started",
+      level: "info",
+      metadata: { source, fileName: file.name, fileSize: file.size, fileType: file.type },
+    });
+    setIsSavingRoom(true);
+    setError(null);
+    setSuccessMessage(null);
+    setRecoveryMessage(null);
+    setRoomSaveStatus("idle");
+    setProductSaveStatus("idle");
+    setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
+
+    if (devPreviewMode) {
+      if (devRoomObjectUrlRef.current) {
+        URL.revokeObjectURL(devRoomObjectUrlRef.current);
+      }
+
+      const imageUrl = URL.createObjectURL(file);
+      devRoomObjectUrlRef.current = imageUrl;
+
+      const selectedRoom: RoomPreviewSession["selectedRoom"] = {
+        source,
+        imageUrl,
+        demoRoomId: null,
+        floorQuad: null,
+        previewRegion: null,
+      };
+      const nextSession = createDevPreviewSession(selectedRoom, session.selectedProduct);
+
+      try {
+        sessionStorage.setItem(
+          DEV_PREVIEW_ROOM_STORAGE_KEY,
+          JSON.stringify({ ...selectedRoom, imageUrl: null }),
+        );
+      } catch {
+        // Dev preview can continue with in-memory state when storage is unavailable.
+      }
+
+      setSession(nextSession);
+      setRoomSaveStatus("success");
+      setRoomSaveStatusLabel(null);
+      setIsSavingRoom(false);
+      debugLog("success", "Room selected locally for dev preview");
+      return;
+    }
+
+    const fileToUpload = await compressRoomImage(file);
+
+    debugLog(
+      "network",
+      `uploading room  source: ${source}`,
+      `file: ${file.name} (${file.size}b)  ${fileToUpload !== file ? `compressed → ${fileToUpload.name} (${fileToUpload.size}b, ${Math.round((1 - fileToUpload.size / file.size) * 100)}% smaller)` : "skipped compression (file already small)"}`,
+    );
+
+    try {
+      // ── Step 1: request a signed upload URL from the server ───────────────
+      let uploadUrlResponse;
+      let usedDirectUpload = false;
+
+      try {
+        uploadUrlResponse = await requestDirectUploadUrl(sessionId, { source, file: fileToUpload });
+        usedDirectUpload = true;
+        trackClientSessionEvent(sessionId, {
+          source: "mobile",
+          eventType: "room_direct_upload_started",
+          level: "info",
+          metadata: { source, fileSize: fileToUpload.size, fileType: fileToUpload.type },
+        });
+        debugLog("network", `Got signed upload URL — PUT ${uploadUrlResponse.objectKey}`);
+      } catch (urlError) {
+        const isNotSupported =
+          isRoomPreviewRequestError(urlError) &&
+          urlError.status === 501;
+
+        if (isNotSupported) {
+          // Local / non-R2 dev environment — fall back to FormData upload
+          debugLog("info", "Direct upload not supported, falling back to FormData upload");
+        } else {
+          throw urlError;
+        }
+      }
+
+      let response;
+
+      if (usedDirectUpload && uploadUrlResponse) {
+        // ── Step 2: PUT file directly to R2 ────────────────────────────────
+        let r2PutFailed = false;
+
+        // ── PUT directly to R2 — isolated try/catch so that only genuine
+        // R2 network failures (CORS / connection drop, status 0) are caught
+        // here. Errors from confirmDirectUpload below are NOT caught by this
+        // block and propagate to the outer handler.
+        try {
+          await uploadFileToR2(
+            uploadUrlResponse.uploadUrl,
+            fileToUpload,
+            {
+              onProgress: (percent) => {
+                setRoomSaveStatusLabel(`جاري رفع صورة الغرفة... ${percent}%`);
+              },
+              onR2Failure: ({ status, statusText, responseText, host }) => {
+                trackClientSessionEvent(sessionId, {
+                  source: "mobile",
+                  eventType: "room_direct_upload_r2_failed",
+                  level: "error",
+                  code: status === 403 ? "R2_SIGNATURE_INVALID" : status === 0 ? "R2_CORS_OR_NETWORK" : "R2_PUT_FAILED",
+                  metadata: {
+                    status,
+                    statusText,
+                    responseText: responseText.slice(0, 500),
+                    host,
+                    source,
+                    fileType: fileToUpload.type,
+                    fileSize: fileToUpload.size,
+                  },
+                });
+              },
+            },
+          );
+        } catch (r2PutError) {
+          // Only CORS / network errors (XHR onerror → status 0, code "network")
+          // fall back silently. Auth failures (403) or server errors are re-thrown.
+          if (isRoomPreviewRequestError(r2PutError) && r2PutError.code === "network") {
+            r2PutFailed = true;
+            debugLog("network", "R2 PUT blocked (CORS/network) — falling back to server upload");
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "room_upload_started",
+              level: "info",
+              metadata: { source, fallback: "server_proxy", reason: "r2_cors_fallback" },
+            });
+          } else {
+            throw r2PutError;
+          }
+        }
+
+        if (r2PutFailed) {
+          // ── CORS fallback: proxy upload through our Next.js server ───────────
+          setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
+          response = await saveRoomPreviewSessionRoom(
+            sessionId,
+            { source, file: fileToUpload, previousRoomImageUrl: session.selectedRoom?.imageUrl },
+          );
+        } else {
+          debugLog("success", `File uploaded to R2 (${fileToUpload.size}b)`);
+          setRoomSaveStatusLabel("جاري رفع صورة الغرفة...");
+
+          // ── Step 3: confirm the upload on the server ──────────────────────
+          response = await confirmDirectUpload(sessionId, {
+            objectKey: uploadUrlResponse.objectKey,
+            publicUrl: uploadUrlResponse.publicUrl,
+            source,
+            file: fileToUpload,
+          });
+
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "room_direct_upload_confirmed",
+            level: "info",
+            metadata: { source, objectKey: uploadUrlResponse.objectKey },
+          });
+        }
+      } else {
+        // ── Fallback: old FormData upload (development / non-R2) ────────────
+        response = await saveRoomPreviewSessionRoom(
+          sessionId,
+          { source, file: fileToUpload, previousRoomImageUrl: session.selectedRoom?.imageUrl },
+        );
+      }
+
+      setSession(response.session);
+      setRoomSaveStatus("success");
+      setRoomSaveStatusLabel(null);
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "room_upload_completed",
+        level: "info",
+        statusAfter: response.session.status,
+        metadata: { source, directUpload: usedDirectUpload },
+      });
+      debugLog("success", `Room saved  source: ${response.session.selectedRoom?.source ?? "?"}`);
+    } catch (saveError) {
+      const failure = getViewStateFromError(saveError, t);
+      debugLog("error", `Room upload failed: ${saveError instanceof Error ? saveError.message : String(saveError)}`, `file: ${file.name}`);
+
+      if (failure.state === "expired" || failure.state === "not_found") {
+        setSession(null);
+        setViewState(failure.state);
+        setError(failure.message);
+        debugLog("state", `viewState → ${failure.state}`);
+      } else {
+        console.error(
+          "[room-preview] Failed to save uploaded room",
+          JSON.stringify({ error: JSON.parse(getRoomPreviewErrorLogDetails(saveError)), fileName: file.name, fileSize: file.size, fileType: file.type, sessionId, source }),
+        );
+        const recovery = isRoomPreviewRequestError(saveError) && saveError.status === 413
+          ? getCustomerRecoveryMessage("image_too_large")
+          : getCustomerRecoveryMessage("retry_upload");
+        setRecoveryMessage(recovery);
+        setError(
+          recovery?.text ??
+          (isRoomPreviewRequestError(saveError) && saveError.status === 403
+            ? "انتهت صلاحية رابط الرفع، حاول مرة أخرى"
+            : createActionErrorMessage(saveError, "تعذر رفع الصورة، تحقق من الاتصال وحاول مرة أخرى")),
+        );
+        setRoomSaveStatus("error");
+        setRoomSaveStatusLabel(null);
+      }
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "room_upload_failed",
+        level: "error",
+        code: isRoomPreviewRequestError(saveError) ? saveError.code : null,
+        message: saveError instanceof Error ? saveError.message : String(saveError),
+        metadata: { source, fileName: file.name, fileSize: file.size, fileType: file.type },
+      });
+    } finally {
+      setIsSavingRoom(false);
+    }
+  }, [devPreviewMode, isSavingRoom, session, sessionId, t, debugLog]);
+
+  const handleProductSelect = useCallback((productId: string) => {
+    if (!session) return;
+
+    // Immediate local update — UI responds instantly, no spinner yet
+    setLocalProductId(productId);
+    setError(null);
+    setSuccessMessage(null);
+
+    if (devPreviewMode) {
+      const product = products.find((p) => p.id === productId);
+      if (!product) {
+        setError(t.roomPreview.mobile.product.saveFailed);
+        setProductSaveStatus("error");
+        return;
+      }
+
+      setSession({
+        ...session,
+        status: "product_selected",
+        selectedProduct: {
+          id: product.id,
+          barcode: product.barcode,
+          name: product.name,
+          productType: product.productType,
+          imageUrl: product.imageUrl,
+        },
+      });
+      setProductSaveStatus("success");
+      debugLog("success", `Product selected locally for dev preview  id: ${product.id}`);
+      return;
+    }
+
+    // Cancel any pending save from previous navigation
+    if (productDebounceRef.current) clearTimeout(productDebounceRef.current);
+
+    // Save to server 700ms after the user stops navigating
+    productDebounceRef.current = setTimeout(() => {
+      setIsSavingProduct(true);
+      setProductSaveStatus("idle");
+
+      trackClientSessionEvent(sessionId, {
+        source: "mobile",
+        eventType: "mobile_tap_detected",
+        level: "info",
+        metadata: { target: "product", productId },
+      });
+      debugLog("network", `POST /product  productId: ${productId}`);
+
+      saveRoomPreviewSessionProduct(sessionId, { productId })
+        .then((response) => {
+          setSession(response.session);
+          setProductSaveStatus("success");
+          trackClientSessionEvent(sessionId, {
+            source: "mobile",
+            eventType: "product_selected",
+            level: "info",
+            statusAfter: response.session.status,
+            metadata: { productId: response.session.selectedProduct?.id ?? productId },
+          });
+          debugLog("success", `Product saved  id: ${response.session.selectedProduct?.id ?? "?"}`);
+          console.info("[room-preview] Product saved", {
+            sessionId,
+            productId: response.session.selectedProduct?.id ?? null,
+            barcode:   response.session.selectedProduct?.barcode ?? null,
+            status:    response.session.status,
+          });
+        })
+        .catch((saveError) => {
+          const failure = getViewStateFromError(saveError, t);
+          debugLog("error", `Product save failed: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
+          if (failure.state === "expired" || failure.state === "not_found") {
+            setSession(null);
+            setViewState(failure.state);
+            setError(failure.message);
+            debugLog("state", `viewState → ${failure.state}`);
+          } else {
+            console.error("[room-preview] Failed to save product", { sessionId, productId, error: saveError });
+            setError(createActionErrorMessage(saveError, t.roomPreview.mobile.product.saveFailed));
+            setProductSaveStatus("error");
+            // Track in DB so the error is visible in admin/system diagnostics
+            trackClientSessionEvent(sessionId, {
+              source: "mobile",
+              eventType: "product_save_failed",
+              level: "error",
+              code: isRoomPreviewRequestError(saveError) ? saveError.code : null,
+              message: saveError instanceof Error ? saveError.message : String(saveError),
+              metadata: {
+                productId,
+                status: isRoomPreviewRequestError(saveError) ? saveError.status : null,
+              },
+            });
+          }
+        })
+        .finally(() => {
+          setIsSavingProduct(false);
+        });
+    }, 700);
+  }, [devPreviewMode, products, session, sessionId, t, debugLog]);
+
+  // Look up a product by scanned/entered value. Tries barcode → id → name substring.
+  const handleCreateRender = useCallback(async () => {
+    if (devPreviewMode) {
+      setError("Render is disabled in local dev preview without DATABASE_URL.");
+      setRecoveryMessage(null);
+      setIsSavingProduct(false);
+      return;
+    }
+
+    console.log("[render] handler called", {
+      productDebounce: productDebounceRef.current,
+      inFlight: renderRequestInFlightRef.current,
+      isSavingProduct,
+      sessionStatus: session?.status ?? null,
+      sessionId,
+    });
+
+    // ── Flush pending product debounce ─────────────────────────────────────────
+    //
+    // productDebounceRef.current holds the timer ID even after the timer fires
+    // (it is never cleared to null in handleProductSelect's callback). Clearing
+    // and checking whether the product is already persisted handles both cases:
+    //   • timer already fired  → product saved, just clear the stale ref and go
+    //   • timer still pending  → cancel it and save the product immediately
+    if (productDebounceRef.current !== null) {
+      clearTimeout(productDebounceRef.current);
+      const pendingProductId = localProductId ?? session?.selectedProduct?.id ?? null;
+      const productAlreadySaved =
+        Boolean(session?.selectedProduct?.imageUrl) &&
+        session?.selectedProduct?.id === pendingProductId;
+      productDebounceRef.current = null;
+
+      console.log("[render] product debounce flushed", { pendingProductId, productAlreadySaved });
+      trackClientSessionEvent(session?.id ?? sessionId, {
+        source: "mobile",
+        eventType: "render_product_debounce_flushed",
+        level: "info",
+        metadata: {
+          pendingProductId,
+          productAlreadySaved,
+          sessionId: session?.id ?? sessionId,
+          currentStatus: session?.status ?? null,
+        },
+      });
+
+      if (!productAlreadySaved && pendingProductId && session) {
+        debugLog("network", `Flushing product save before render  productId: ${pendingProductId}`);
+        try {
+          const saveResponse = await saveRoomPreviewSessionProduct(sessionId, { productId: pendingProductId });
+          setSession(saveResponse.session);
+          setProductSaveStatus("success");
+          debugLog("success", `Product flushed and saved  id: ${saveResponse.session.selectedProduct?.id ?? "?"}`);
+        } catch (saveError) {
+          const failure = getViewStateFromError(saveError, t);
+          debugLog("error", `Product flush-save failed: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
+          if (failure.state === "expired" || failure.state === "not_found") {
+            setSession(null);
+            setViewState(failure.state);
+            setError(failure.message);
+            debugLog("state", `viewState → ${failure.state}`);
+          } else {
+            setError(createActionErrorMessage(saveError, t.roomPreview.mobile.product.saveFailed));
+            setProductSaveStatus("error");
+          }
+          trackClientSessionEvent(session.id, {
+            source: "mobile",
+            eventType: "render_request_failed",
+            level: "error",
+            code: "PRODUCT_SAVE_FAILED_BEFORE_RENDER",
+            message: saveError instanceof Error ? saveError.message : String(saveError),
+            metadata: {
+              sessionId: session.id,
+              currentStatus: session.status,
+              pendingProductId,
+              errorMessage: saveError instanceof Error ? saveError.message : String(saveError),
+              endpoint: `/api/room-preview/sessions/${session.id}/render`,
+            },
+          });
+          return;
+        }
+      }
+    }
+
+    if (
+      renderRequestInFlightRef.current ||
+      isSavingProduct ||
+      !session ||
+      session.status === "ready_to_render" ||
+      session.status === "rendering"
+    ) {
+      const blockedBy = renderRequestInFlightRef.current
+        ? "in_flight"
+        : isSavingProduct
+          ? "is_saving_product"
+          : !session
+            ? "no_session"
+            : "already_rendering";
+      console.log("[render] early return", { blockedBy, status: session?.status });
+      debugLog("warn", `Ignored duplicate render request (blockedBy: ${blockedBy})`);
+      return;
+    }
+
+    renderRequestInFlightRef.current = true;
+
+    trackClientSessionEvent(session.id, {
+      source: "mobile",
+      eventType: "mobile_tap_detected",
+      level: "info",
+      metadata: { target: "render" },
+    });
+    setIsSavingProduct(true);
+    setError(null);
+    setSuccessMessage(null);
+    setRecoveryMessage(null);
+    debugLog("network", `POST /render  sessionId: ${session.id}`);
+
+    const renderMetadataBase = {
+      sessionId: session.id,
+      currentStatus: session.status,
+      hasRoomImage: Boolean(session.selectedRoom?.imageUrl),
+      hasProduct: Boolean(session.selectedProduct?.id && session.selectedProduct?.imageUrl),
+      productId: session.selectedProduct?.id ?? null,
+      endpoint: `/api/room-preview/sessions/${session.id}/render`,
+    };
+
+    console.log("[render] request started", renderMetadataBase);
+    trackClientSessionEvent(session.id, {
+      source: "mobile",
+      eventType: "render_request_started",
+      level: "info",
+      metadata: renderMetadataBase,
+    });
+
+    try {
+      // Returns immediately (202) with session in ready_to_render state.
+      const renderingSession = await createRenderForSession(session.id);
+      setSession(renderingSession);
+      debugLog("success", "Render started — polling for result");
+
+      trackClientSessionEvent(session.id, {
+        source: "mobile",
+        eventType: "render_request_success",
+        level: "info",
+        metadata: { ...renderMetadataBase, statusAfter: renderingSession.status },
+      });
+
+      // Poll until the server pushes result_ready or failed via DB.
+      const finalSession = await pollForRenderResult(session.id, undefined, {
+        onUpdate(nextSession) {
+          setSession(nextSession);
+        },
+      });
+      setSession(finalSession);
+
+      if (finalSession.status === "result_ready") {
+        setShowResult(true);
+        setSuccessMessage(t.roomPreview.mobile.product.saveSuccess);
+        debugLog("success", "Render complete");
+      } else {
+        debugLog("error", "Render pipeline failed — session marked failed");
+        const recovery = getCustomerRecoveryMessage("retry_render");
+        setRecoveryMessage(recovery);
+        setError(recovery?.text ?? t.roomPreview.mobile.loadFailed);
+      }
+    } catch (renderError) {
+      const failure = getViewStateFromError(renderError, t);
+      debugLog("error", `Render error: ${renderError instanceof Error ? renderError.message : String(renderError)}`);
+
+      trackClientSessionEvent(session.id, {
+        source: "mobile",
+        eventType: "render_request_failed",
+        level: "error",
+        code: isRoomPreviewRequestError(renderError) ? String(renderError.code) : "UNKNOWN",
+        message: renderError instanceof Error ? renderError.message : String(renderError),
+        metadata: {
+          ...renderMetadataBase,
+          status: isRoomPreviewRequestError(renderError) ? renderError.status : null,
+          errorMessage: renderError instanceof Error ? renderError.message : String(renderError),
+        },
+      });
+
+      if (isRoomPreviewRequestError(renderError) && renderError.code === "render_limit_reached") {
+        setError("وصلت إلى عدد المحاولات المتاحة لهذه التجربة.");
+        setRecoveryMessage(null);
+      } else if (isRoomPreviewRequestError(renderError) && renderError.code === "render_device_cooldown") {
+        setError("يمكنك طلب معاينة جديدة بعد ٥ دقائق.");
+        setRecoveryMessage(null);
+      } else if (isRoomPreviewRequestError(renderError) && renderError.code === "screen_budget_exhausted") {
+        setError("انتهى الحد اليومي لهذه الشاشة. يرجى التواصل مع الموظف المختص.");
+        setRecoveryMessage(null);
+      } else {
+        const recovery = getCustomerRecoveryMessage(
+          isRoomPreviewRequestError(renderError) && renderError.code === "timeout"
+            ? "retry_render"
+            : "reload_page",
+        );
+        setRecoveryMessage(recovery);
+        setError(recovery?.text ?? failure.message);
+      }
+      trackClientSessionEvent(session.id, {
+        source: "mobile",
+        eventType: isRoomPreviewRequestError(renderError) && renderError.code === "timeout"
+          ? "render_timeout"
+          : "render_failed",
+        level: "error",
+        code: isRoomPreviewRequestError(renderError) && renderError.code === "timeout"
+          ? "RENDER_TIMEOUT"
+          : "RENDER_FAILED",
+        message: renderError instanceof Error ? renderError.message : String(renderError),
+      });
+    } finally {
+      renderRequestInFlightRef.current = false;
+      setIsSavingProduct(false);
+    }
+  }, [devPreviewMode, isSavingProduct, localProductId, session, sessionId, t, debugLog]);
+
+  // ── Derived state ────────────────────────────────────────────────────────────
+
+  const isConnected    = session ? isSessionConnected(session) : false;
+  const hasSavedRoom   = Boolean(session?.selectedRoom?.imageUrl);
+  const hasSavedProduct = Boolean(
+    session?.selectedProduct?.id && session?.selectedProduct?.imageUrl,
+  );
+  const effectiveLocalProductId = localProductId ?? session?.selectedProduct?.id ?? null;
+
+  const sectionAlignClass         = dir === "rtl" ? "text-right" : "text-left";
+  const fileInputSpacingClass      = dir === "rtl" ? "file:ml-3"  : "file:mr-3";
+  const inlineSpinnerSpacingClass  = dir === "rtl" ? "ml-2"       : "mr-2";
+
+  return {
+    t,
+    locale,
+    dir,
+    formatMessage,
+    session,
+    viewState,
+    isConnecting,
+    isSavingRoom,
+    isSavingProduct,
+    showResult,
+    setShowResult,
+    roomSaveStatusLabel,
+    error,
+    successMessage,
+    roomSaveStatus,
+    productSaveStatus,
+    recoveryMessage,
+    clearRecoveryMessage: () => setRecoveryMessage(null),
+    isConnected,
+    hasSavedRoom,
+    hasSavedProduct,
+    localProductId: effectiveLocalProductId,
+    sectionAlignClass,
+    fileInputSpacingClass,
+    inlineSpinnerSpacingClass,
+    retry: () => setLoadAttempt((n) => n + 1),
+    handleConnect,
+    handleFileSelection,
+    handleProductSelect,
+    handleCreateRender,
+    heartbeatConnected,
+    heartbeatFailedCount,
+    heartbeatLastSuccessAt,
+    debugEntries,
+    clearDebugLog,
+  };
+}

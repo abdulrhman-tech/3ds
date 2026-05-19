@@ -1,0 +1,166 @@
+# سجل التحسينات — Room Preview AI
+
+> **الفترة:** منذ استلام الكود حتى تاريخ اليوم  
+> **المنصة:** Render.com (free tier) — Next.js 16 — Gemini AI — Cloudflare R2
+
+---
+
+## 1. إصلاح خلل `after()` — يتسبب في فشل وهمي للـ render
+
+| | |
+|---|---|
+| **المشكلة** | دالة `after()` من `next/server` تعمل فقط داخل سياق الـ request. كانت تُستخدَم في pipeline الـ render (خارج الـ request) مما يجعل الـ render يُسجَّل كـ "failed" في قاعدة البيانات حتى لو نجح فعلاً. |
+| **التحسين** | استبدال جميع استدعاءات `after()` عبر 8 ملفات بـ `void` IIFE لتشغيل المهام الخلفية بشكل صحيح. |
+| **الملفات** | `render-service.ts`, `render/route.ts`, `activate`, `connect`, `confirm-upload`, `test-render`, `diagnostics`, `actions.ts` |
+| **الأثر** | الـ renders التي كانت تظهر كـ "فاشلة" أصبحت تُسجَّل بشكل صحيح كـ "ناجحة". |
+
+---
+
+## 2. إصلاح خلل R2 CORS Fallback — رفع الصور فاشل بدون سبب حقيقي
+
+| | |
+|---|---|
+| **المشكلة** | كانت `uploadFileToR2` و `confirmDirectUpload` داخل نفس الـ `try/catch`. أي خطأ في `confirmDirectUpload` كان يُفسَّر خطأً على أنه فشل في الرفع المباشر، مما يُطلق fallback للرفع عبر السيرفر بدون داعٍ. |
+| **التحسين** | فصل الـ `try/catch` لكل دالة بشكل مستقل، حتى يعمل كل خطأ في سياقه الصحيح. |
+| **الملفات** | `room-service.ts` |
+| **الأثر** | رفع الصور أكثر موثوقية؛ لا يتحول للـ fallback إلا عند حدوث خطأ حقيقي في الرفع المباشر. |
+
+---
+
+## 3. تحويل صور المنتجات PNG → WebP
+
+| | |
+|---|---|
+| **المشكلة** | صور المنتجات الخمسة بصيغة PNG وحجم إجمالي ~2.7MB لكل صورة. كانت تستغرق وقتاً طويلاً في التحميل على شبكات الجوال. |
+| **التحسين** | تحويل جميع صور المنتجات إلى WebP مع الحفاظ على الجودة. |
+| **النتيجة** | من 2.7MB → 30-80KB لكل صورة (**تخفيض 97%**). |
+| **الملفات** | `public/PQC201-1220X180X6/*.webp`, `data/room-preview/mock-products.ts` |
+| **الأثر** | الصور تُحمَّل بشكل أسرع بكثير على موبايل العميل في المعرض. |
+
+---
+
+## 4. إصلاح خطأ 429 — "Too many requests" عند حفظ المنتج
+
+| | |
+|---|---|
+| **المشكلة** | Render.com free tier يُرجع أحياناً `429 Too Many Requests` من الـ proxy قبل وصول الطلب للسيرفر (خصوصاً أثناء الـ cold start). الكود لم يكن يعيد المحاولة، فيُظهر خطأ للمستخدم مباشرةً. |
+| **التحسين** | إضافة retry تلقائي واحد عند تلقي `429`؛ ينتظر قيمة `Retry-After` من الـ header (أو 2 ثانية كـ fallback) ثم يعيد المحاولة تلقائياً بدون أي تدخل من المستخدم. |
+| **الملفات** | `lib/room-preview/session-client.ts` — دالة `requestRoomPreviewJson` |
+| **الأثر** | تجربة أكثر سلاسة للعميل؛ معظم أخطاء 429 تُحَل تلقائياً بدون ظهور رسالة خطأ. |
+
+---
+
+## 5. تسجيل أخطاء حفظ المنتج في قاعدة البيانات
+
+| | |
+|---|---|
+| **المشكلة** | عند فشل حفظ المنتج، كان الخطأ يُطبَع في `console.error` فقط — غير مرئي لأي طرف خارج الـ browser. لم يكن هناك أي أثر في قاعدة البيانات أو صفحة الـ admin. |
+| **التحسين** | إضافة `trackClientSessionEvent` في حالة الفشل بنوع الحدث `product_save_failed` مع كود الخطأ والـ status code ومعرّف المنتج. |
+| **الملفات** | `features/room-preview/mobile/useMobileSession.ts` |
+| **الأثر** | أخطاء حفظ المنتج تظهر الآن في صفحة `/admin/system` تحت "Recent Error Events" مما يُتيح تشخيص المشاكل عن بُعد. |
+
+---
+
+## 6. حذف ملفات PNG القديمة من الـ repo
+
+| | |
+|---|---|
+| **المشكلة** | بعد تحويل صور المنتجات إلى WebP، بقيت ملفات PNG الأصلية في الـ repo (~11.3MB) مع الـ WebP الجديدة — حجم مزدوج بدون فائدة. |
+| **التحسين** | حذف الـ 5 ملفات PNG القديمة من GitHub مع الإبقاء على WebP فقط. |
+| **الأثر** | تخفيض حجم الـ repo والـ deployment بـ **~11.3MB**. |
+
+---
+
+## 7. تحويل صورة ورق الجدران W-001.png → WebP
+
+| | |
+|---|---|
+| **المشكلة** | ملف `W-001.png` (ورق الجدران) بحجم **3.4MB** PNG في مجلد `public/products/`. |
+| **التحسين** | تحويل الملف إلى WebP بجودة 85. |
+| **النتيجة** | من 3.4MB → 425KB (**تخفيض 87%**). |
+| **الملفات** | `public/products/W-001.webp`, `data/products.ts` |
+
+---
+
+## 8. إصلاح ثغرة أمنية — أسرار مكشوفة في render.yaml
+
+| | |
+|---|---|
+| **المشكلة** | ملف `render.yaml` كان يحتوي على 3 أسرار حقيقية مكتوبة بشكل واضح داخل الـ repo على GitHub: `SESSION_TOKEN_SECRET`، `CLEANUP_SECRET`، `ADMIN_JWT_SECRET`. أي شخص يرى الـ repo يمكنه رؤية هذه القيم. |
+| **التحسين** | إزالة القيم الحقيقية واستبدالها بـ `sync: false` — أي أن هذه الأسرار يجب ضبطها يدوياً في Render dashboard ولا تُكتَب أبداً في الكود. |
+| **الملفات** | `render.yaml` |
+| **الأثر** | الأسرار لم تعد مكشوفة في الكود المصدري. **يُنصح بتغيير قيم هذه الأسرار في Render لأنها كانت مكشوفة سابقاً.** |
+
+
+## 10. إضافة Composite Indexes لقاعدة البيانات
+
+| | |
+|---|---|
+| **المشكلة** | صفحة `/admin/system` تُنفّذ استعلامات من نوع: "أخطاء آخر 24 ساعة" و"renders الفاشلة هذا الأسبوع". كانت هذه الاستعلامات تُنفَّذ بدون composite index، مما يعني full table scan لكل استعلام. |
+| **التحسين** | إضافة 3 composite indexes مباشرةً على قاعدة البيانات وتحديث `schema.prisma`: |
+| | • `session_events (level, timestamp DESC)` — لاستعلامات "errors in last 24h/7d" |
+| | • `RenderJob (status, createdAt DESC)` — لقائمة الـ renders الفاشلة |
+| | • `RoomPreviewSession (status, createdAt DESC)` — لقائمة الجلسات في الـ admin |
+| **الملفات** | `prisma/schema.prisma` + مباشرةً على الـ production DB |
+| **الأثر** | استعلامات Admin أسرع بشكل ملحوظ مع نمو البيانات. |
+
+---
+
+## 11. تفعيل Redis — SSE حقيقي وقفل الـ render
+
+| | |
+|---|---|
+| **المشكلة** | `ENABLE_REDIS=false` — النظام كان يستخدم in-process fallbacks للـ SSE pub/sub وللـ render locks. هذا يعني: الشاشة الكبيرة تعتمد على polling بدلاً من push فوري، ولا يوجد حماية حقيقية من تشغيل render مزدوج لنفس الجلسة. |
+| **التحسين** | ربط Upstash Redis وتفعيل `ENABLE_REDIS=true` في `render.yaml`. الكود كان مكتوباً مسبقاً ويدعم Redis بالكامل (`lib/redis.ts`). |
+| **التفاصيل** | • **Pub/Sub حقيقي**: الشاشة الكبيرة تستقبل نتيجة الـ AI render فور اكتمالها دون polling |
+| | • **Render locks موزَّعة**: يمنع تشغيل render مزدوج حتى لو جاء من أكثر من طلب |
+| | • **Rate limiting دقيق**: يعمل على مستوى الـ server الحقيقي لا الـ process فقط |
+| **الملفات** | `render.yaml`, `.env.local` |
+| **الأثر** | استجابة الشاشة الكبيرة أسرع وأكثر موثوقية. |
+
+---
+
+## 12. تفعيل Rate Limiting في Production
+
+| | |
+|---|---|
+| **المشكلة** | `ROOM_PREVIEW_DISABLE_RATE_LIMIT=true` كان موجوداً في `render.yaml` — أي أن الحماية من إساءة الاستخدام كانت مُعطَّلة كلياً في production. أي شخص كان يقدر يُرسل آلاف الطلبات للـ render API بدون قيود. |
+| **التحسين** | حذف المتغير من `render.yaml`؛ الـ rate limiter يعمل الآن تلقائياً مع Redis للحماية الموزَّعة. |
+| **الملفات** | `render.yaml` |
+| **الأثر** | الـ API محمي من الإساءة؛ الـ rate limiting يعمل على مستوى Redis (موزَّع وحقيقي). |
+
+---
+
+## 13. تنظيف next.config.ts وإصلاح تحذيرات Sentry
+
+| | |
+|---|---|
+| **المشكلة** | عند كل إقلاع للسيرفر كانت تظهر **7 تحذيرات** في الـ logs: خيارات `eslint` و`serverActions` غير معروفة في Next.js 16، وأربع خيارات Sentry مُهمَلة، وثلاث إعدادات Sentry ناقصة. |
+| **التحسين** | |
+| | • حذف `eslint` من `next.config.ts` (غير موجود في Next.js 16) |
+| | • حذف `serverActions` من `next.config.ts` (غير معتمد في Next.js 16) |
+| | • استبدال `disableLogger` بـ `webpack.treeshake.removeDebugLogging` |
+| | • استبدال `automaticVercelMonitors` بـ `webpack.automaticVercelMonitors` |
+| | • نقل Sentry client init من `sentry.client.config.ts` إلى `instrumentation-client.ts` |
+| | • إضافة `onRouterTransitionStart` لتتبع navigations |
+| | • إضافة `onRequestError` لتتبع أخطاء Server Components |
+| | • إنشاء `app/global-error.tsx` للأخطاء الجذرية |
+| **الملفات** | `next.config.ts`, `instrumentation.ts`, `instrumentation-client.ts`, `app/global-error.tsx` |
+| **الأثر** | الـ startup logs نظيفة بدون تحذيرات، وتغطية Sentry أكمل. |
+
+---
+
+## ملخص الأثر الكلي
+
+| المقياس | قبل | بعد |
+|---|---|---|
+| حجم صور المنتجات | ~13.5MB (PNG) | ~293KB (WebP) — **تخفيض 97%** |
+| حجم الـ repo المحذوف | — | **~26MB** أقل |
+| أخطاء render وهمية | موجودة (بسبب `after()`) | مُصلَحة ✅ |
+| أخطاء R2 fallback | موجودة | مُصلَحة ✅ |
+| أخطاء 429 | تُظهر رسالة للمستخدم | تُحَل تلقائياً بـ retry ✅ |
+| رؤية الأخطاء في admin | الـ render فقط | + أخطاء المنتج أيضاً ✅ |
+| أسرار مكشوفة في GitHub | 3 أسرار | صفر ✅ |
+| Admin query performance | Full table scan | Composite indexes ✅ |
+| SSE الشاشة الكبيرة | Polling (بطيء) | Push حقيقي عبر Redis ✅ |
+| Render locks | In-process فقط | Redis موزَّع ✅ |
