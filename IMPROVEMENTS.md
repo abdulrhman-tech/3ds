@@ -103,6 +103,34 @@
 
 ---
 
+## 10. إضافة Composite Indexes لقاعدة البيانات
+
+| | |
+|---|---|
+| **المشكلة** | صفحة `/admin/system` تُنفّذ استعلامات من نوع: "أخطاء آخر 24 ساعة" و"renders الفاشلة هذا الأسبوع". كانت هذه الاستعلامات تُنفَّذ بدون composite index، مما يعني full table scan لكل استعلام. |
+| **التحسين** | إضافة 3 composite indexes مباشرةً على قاعدة البيانات وتحديث `schema.prisma`: |
+| | • `session_events (level, timestamp DESC)` — لاستعلامات "errors in last 24h/7d" |
+| | • `RenderJob (status, createdAt DESC)` — لقائمة الـ renders الفاشلة |
+| | • `RoomPreviewSession (status, createdAt DESC)` — لقائمة الجلسات في الـ admin |
+| **الملفات** | `prisma/schema.prisma` + مباشرةً على الـ production DB |
+| **الأثر** | استعلامات Admin أسرع بشكل ملحوظ مع نمو البيانات. |
+
+---
+
+## 11. تفعيل Redis — SSE حقيقي وقفل الـ render
+
+| | |
+|---|---|
+| **المشكلة** | `ENABLE_REDIS=false` — النظام كان يستخدم in-process fallbacks للـ SSE pub/sub وللـ render locks. هذا يعني: الشاشة الكبيرة تعتمد على polling بدلاً من push فوري، ولا يوجد حماية حقيقية من تشغيل render مزدوج لنفس الجلسة. |
+| **التحسين** | ربط Upstash Redis وتفعيل `ENABLE_REDIS=true` في `render.yaml`. الكود كان مكتوباً مسبقاً ويدعم Redis بالكامل (`lib/redis.ts`). |
+| **التفاصيل** | • **Pub/Sub حقيقي**: الشاشة الكبيرة تستقبل نتيجة الـ AI render فور اكتمالها دون polling |
+| | • **Render locks موزَّعة**: يمنع تشغيل render مزدوج حتى لو جاء من أكثر من طلب |
+| | • **Rate limiting دقيق**: يعمل على مستوى الـ server الحقيقي لا الـ process فقط |
+| **الملفات** | `render.yaml`, `.env.local` |
+| **الأثر** | استجابة الشاشة الكبيرة أسرع وأكثر موثوقية. |
+
+---
+
 ## ملخص الأثر الكلي
 
 | المقياس | قبل | بعد |
@@ -114,3 +142,6 @@
 | أخطاء 429 | تُظهر رسالة للمستخدم | تُحَل تلقائياً بـ retry ✅ |
 | رؤية الأخطاء في admin | الـ render فقط | + أخطاء المنتج أيضاً ✅ |
 | أسرار مكشوفة في GitHub | 3 أسرار | صفر ✅ |
+| Admin query performance | Full table scan | Composite indexes ✅ |
+| SSE الشاشة الكبيرة | Polling (بطيء) | Push حقيقي عبر Redis ✅ |
+| Render locks | In-process فقط | Redis موزَّع ✅ |
