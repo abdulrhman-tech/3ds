@@ -82,9 +82,6 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   images: {
     remotePatterns: [
       // Cloudflare R2 public buckets (*.r2.dev)
@@ -107,16 +104,6 @@ const nextConfig: NextConfig = {
       ...lanOrigins,
       ...(process.env.REPLIT_DEV_DOMAIN ? [process.env.REPLIT_DEV_DOMAIN] : []),
     ],
-  }),
-
-  // Allow Server Actions submitted from LAN devices.
-  // In Next.js 16 `serverActions` is a top-level key (no longer experimental).
-  // Next.js validates the Origin header on every Server Action POST; without
-  // this, gate form submissions from mobile are rejected with a CSRF error.
-  ...(!isProd && lanOrigins.length > 0 && {
-    serverActions: {
-      allowedOrigins: lanOrigins,
-    },
   }),
 
   async headers() {
@@ -196,9 +183,12 @@ export default withBundleAnalyzer(withSentryConfig(nextConfig, {
   // Upload a larger set of source maps for prettier stack traces (increases build time).
   widenClientFileUpload: true,
 
-  // Removes the Sentry logger from the client bundle (~3.5 kB).
-  disableLogger: true,
-
-  // Automatically instrument Vercel Cron Monitors.
-  automaticVercelMonitors: true,
+  webpack: {
+    // Removes the Sentry logger from the client bundle (~3.5 kB).
+    treeshake: {
+      removeDebugLogging: true,
+    },
+    // Automatically instrument Vercel Cron Monitors.
+    automaticVercelMonitors: true,
+  },
 }));
