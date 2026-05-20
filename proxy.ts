@@ -5,22 +5,58 @@ import { isRoomPreviewRateLimitDisabled } from "@/lib/room-preview/rate-limit-by
 
 // ─── Limits configuration ─────────────────────────────────────────────────────
 //
-// Each entry: [url-fragment-to-match, requests-per-window, window-seconds]
+// Each rule uses an explicit path pattern; avoid substring matching because
+// "/room" would otherwise match "/api/room-preview/...".
 // Rules are checked in order; first match wins.
 // Counters are Redis-backed (shared across all instances) with an in-memory
 // fallback when Redis is unavailable.
 
-type RateLimitRule = [fragment: string, limit: number, windowSeconds: number];
+type RateLimitRule = {
+  limit: number;
+  matches: (path: string, method: string) => boolean;
+  name: string;
+  windowSeconds: number;
+};
+
+const ROOM_PREVIEW_SESSION_ROUTE = /^\/api\/room-preview\/sessions\/[^/]+$/;
+const ROOM_PREVIEW_RENDER_ROUTE = /^\/api\/room-preview\/sessions\/[^/]+\/render$/;
+const ROOM_PREVIEW_ROOM_ROUTE = /^\/api\/room-preview\/sessions\/[^/]+\/room(?:\/.*)?$/;
 
 const RATE_LIMIT_RULES: RateLimitRule[] = [
   // AI render pipeline — most expensive resource
-  ["/render",   5,   60],
+  {
+    name: "room-preview-render",
+    limit: 5,
+    windowSeconds: 60,
+    matches: (path) => ROOM_PREVIEW_RENDER_ROUTE.test(path),
+  },
   // Image uploads
-  ["/room",     20,  60],
-  // Session creation
-  ["/sessions", 15,  60],
+  {
+    name: "room-preview-room-upload",
+    limit: 20,
+    windowSeconds: 60,
+    matches: (path) => ROOM_PREVIEW_ROOM_ROUTE.test(path),
+  },
+  // Session polling/fetch
+  {
+    name: "room-preview-session-fetch",
+    limit: 60,
+    windowSeconds: 60,
+    matches: (path, method) => method === "GET" && ROOM_PREVIEW_SESSION_ROUTE.test(path),
+  },
+  {
+    name: "room-preview-session-create",
+    limit: 15,
+    windowSeconds: 60,
+    matches: (path, method) => method === "POST" && path === "/api/room-preview/sessions",
+  },
   // All other API calls — broad safety net
-  ["/api/",     300, 60],
+  {
+    name: "api-general",
+    limit: 300,
+    windowSeconds: 60,
+    matches: (path) => path.startsWith("/api/"),
+  },
 ];
 
 // ─── Security headers ─────────────────────────────────────────────────────────
@@ -39,6 +75,7 @@ const SECURITY_HEADERS: [string, string][] = [
 
 export async function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
+  const method = request.method.toUpperCase();
 
   // ── Admin auth guard ─────────────────────────────────────────────────────────
   // Protect all /admin routes except /admin/login.
@@ -60,22 +97,35 @@ export async function proxy(request: NextRequest) {
   if (path.startsWith("/api/") && !bypassRoomPreviewRateLimit) {
     const ip = getClientIp(request.headers);
 
-    for (const [fragment, limit, windowSeconds] of RATE_LIMIT_RULES) {
-      if (path.includes(fragment)) {
+    for (const rule of RATE_LIMIT_RULES) {
+      if (rule.matches(path, method)) {
         const result = await checkIpRateLimit(ip, {
-          keyPrefix: `proxy:${fragment}`,
-          limit,
-          windowSeconds,
+          keyPrefix: `proxy:${rule.name}`,
+          limit: rule.limit,
+          windowSeconds: rule.windowSeconds,
         });
 
         if (result.limited) {
+          console.warn("[proxy] rate limited", {
+            ip,
+            matchedRule: rule.name,
+            method,
+            path,
+            retryAfterSeconds: result.retryAfterSeconds,
+          });
+
           return NextResponse.json(
-            { code: "RATE_LIMITED", error: "Too many requests. Please slow down." },
+            {
+              code: "RATE_LIMITED",
+              error: "Too many requests. Please slow down.",
+              matchedRule: rule.name,
+            },
             {
               status: 429,
               headers: {
-                "Retry-After":  String(result.retryAfterSeconds),
+                "Retry-After": String(result.retryAfterSeconds),
                 "Content-Type": "application/json",
+                "X-RateLimit-Rule": rule.name,
               },
             },
           );
