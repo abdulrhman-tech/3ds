@@ -143,7 +143,7 @@ export async function requestRoomPreviewJson(
     const retryAfterHeader = response.headers.get("Retry-After");
     const waitMs = retryAfterHeader ? Math.min(parseInt(retryAfterHeader, 10) * 1000, 5000) : 2000;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
-    response = await doFetch(input, init, headers, timeoutMs);
+    response = await doFetch(input, init, headers, timeoutMs, fallbackMessage);
   }
 
   let data: unknown;

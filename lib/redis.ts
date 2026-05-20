@@ -46,6 +46,14 @@ export function isRedisDisabledByFlag(): boolean {
   return !REDIS_FLAG_ENABLED;
 }
 
+/**
+ * Production cannot safely rely on in-process Redis fallbacks because render
+ * locks, Gemini concurrency, and SSE pub/sub must work across instances.
+ */
+export function isProductionRedisRequiredButUnavailable(): boolean {
+  return process.env.NODE_ENV === "production" && (!REDIS_FLAG_ENABLED || !REDIS_URL);
+}
+
 // ─── Singleton connections ────────────────────────────────────────────────────
 
 let _pub: Redis | null = null;

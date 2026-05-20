@@ -108,6 +108,7 @@ export default function StatusPanel({
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const selectedProduct  = session.selectedProduct;
+  const selectedRoomImageUrl = session.selectedRoom?.imageUrl ?? null;
   const renderResult     = session.renderResult;
   const hasRenderResult  = Boolean(renderResult?.imageUrl && session.status === "result_ready");
   const statusMessage    = getScreenStatusMessage(session.status, t);
@@ -212,12 +213,12 @@ export default function StatusPanel({
       ) : null}
 
       <div className="mt-10 grid grid-cols-1 gap-8">
-        {(session.selectedRoom?.imageUrl || hasSelectedProduct) ? (
+        {(selectedRoomImageUrl || hasSelectedProduct) ? (
           <div className="relative w-full overflow-hidden rounded-[28px] border border-white/10 bg-[#07101e] shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
-            {session.selectedRoom?.imageUrl ? (
+            {selectedRoomImageUrl ? (
               <div className="relative aspect-[16/9] min-h-[320px] w-full overflow-hidden">
                 <Image
-                  src={session.selectedRoom.imageUrl}
+                  src={selectedRoomImageUrl}
                   alt={t.roomPreview.shared.selectedRoomThumbnail}
                   fill
                   sizes="100vw"
@@ -266,14 +267,14 @@ export default function StatusPanel({
           </div>
         ) : null}
 
-        {false && (session.selectedRoom?.imageUrl || hasSelectedProduct) ? (
+        {false && (selectedRoomImageUrl || hasSelectedProduct) ? (
           <>
-            {session.selectedRoom?.imageUrl ? (
+            {selectedRoomImageUrl ? (
               <div className="w-full rounded-2xl border border-[var(--border)] bg-[var(--bg-surface-2)] p-6 shadow-lg transition-transform hover:scale-[1.02] duration-300">
                 <p className="text-sm text-[var(--text-muted)] uppercase tracking-wider mb-3">صورة الغرفة</p>
                 <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-[var(--border)] shadow-inner">
                   <Image
-                    src={session.selectedRoom.imageUrl}
+                    src={selectedRoomImageUrl ?? ""}
                     alt={t.roomPreview.shared.selectedRoomThumbnail}
                     fill
                     sizes="(max-width: 640px) 100vw, 50vw"

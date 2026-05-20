@@ -12,6 +12,7 @@ type RouteParams = { params: Promise<{ sessionId: string }> };
 
 const TERMINAL_STATUSES = new Set(["expired", "completed"]);
 const STALE_THRESHOLD_MS = 75_000;
+const DB_WRITE_THROTTLE_MS = 45_000;
 
 function getCookieValue(request: NextRequest, name: string): string | null {
   return request.cookies.get(name)?.value ?? null;
@@ -40,8 +41,8 @@ function resolveSource(
  *
  * Accepted by both the mobile client (rp-mobile-token / x-session-token) and
  * the screen client (rp-screen-token). Updates lastMobileSeenAt or
- * lastScreenSeenAt and emits a presence event only on first ping or after a
- * gap > 75 s (stale reconnect).
+ * lastScreenSeenAt at most every 45 s and emits a presence event only on
+ * first ping or after a gap > 75 s (stale reconnect).
  */
 export async function POST(request: NextRequest, { params }: RouteParams) {
   const { sessionId } = await params;
@@ -73,8 +74,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   const isFirstPing = lastSeenAt === null;
   const isReconnect =
     !isFirstPing && now - new Date(lastSeenAt).getTime() > STALE_THRESHOLD_MS;
+  const shouldWritePresence =
+    isFirstPing ||
+    isReconnect ||
+    now - new Date(lastSeenAt).getTime() >= DB_WRITE_THROTTLE_MS;
 
-  await updateSessionPresence(sessionId, source);
+  if (shouldWritePresence) {
+    await updateSessionPresence(sessionId, source);
+  }
 
   if (isFirstPing || isReconnect) {
     const eventType = isFirstPing

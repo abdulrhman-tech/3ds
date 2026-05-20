@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
+import { isProductionRedisRequiredButUnavailable } from "@/lib/redis";
 import { ROOM_PREVIEW_TIMEOUTS } from "@/lib/room-preview/constants";
 import { SCREEN_TOKEN_COOKIE } from "@/lib/room-preview/cookies";
 import { verifySessionToken } from "@/lib/room-preview/session-token";
@@ -62,6 +63,17 @@ export async function GET(
         error: "Session not found.",
       },
       { status: 404 },
+    );
+  }
+
+  if (isProductionRedisRequiredButUnavailable()) {
+    log.error({ sessionId }, "SSE blocked because Redis is required in production");
+    return NextResponse.json(
+      {
+        code: "REDIS_REQUIRED",
+        error: "Realtime updates are unavailable because Redis is not configured.",
+      },
+      { status: 503 },
     );
   }
 

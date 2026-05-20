@@ -73,6 +73,9 @@ model RoomPreviewSession {
 
   @@index([status])
   @@index([status, createdAt])
+  @@index([status, updatedAt])
+  @@index([status, lastMobileSeenAt])
+  @@index([status, lastScreenSeenAt])
   @@index([expiresAt])
   @@index([userSessionId])
   @@index([screenId])

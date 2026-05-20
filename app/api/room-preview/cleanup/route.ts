@@ -30,14 +30,16 @@ function safeEquals(provided: string, expected: string): boolean {
  *   1. x-cleanup-secret header matching CLEANUP_SECRET   (manual / cURL calls)
  *   2. Authorization: Bearer <token> matching CRON_SECRET (Vercel Cron)
  *
- * If neither env var is set the endpoint is open (local dev).
- * In production set both CLEANUP_SECRET and CRON_SECRET in Vercel env vars.
+ * If neither env var is set the endpoint is open only outside production.
+ * In production set CLEANUP_SECRET or CRON_SECRET in the hosting env vars.
  */
 function isRequestAuthorized(request: NextRequest): boolean {
   const cleanupSecret = process.env.CLEANUP_SECRET;
   const cronSecret = process.env.CRON_SECRET;
 
-  if (!cleanupSecret && !cronSecret) return true; // dev: no secrets configured
+  if (!cleanupSecret && !cronSecret) {
+    return process.env.NODE_ENV !== "production";
+  }
 
   const xSecret = request.headers.get("x-cleanup-secret") ?? "";
   const authHeader = request.headers.get("authorization") ?? "";

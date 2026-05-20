@@ -7,6 +7,10 @@ import type { MockRoomPreviewProduct } from "@/lib/room-preview/types";
 const PRODUCTS_DIRECTORY = path.join(process.cwd(), "public", "product");
 const PRODUCT_CODE_PATTERN = /\b[A-Z]{2,}\d+(?:\.\d+)?\b/;
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const SHOULD_CACHE_DIRECTORY_READS = process.env.NODE_ENV !== "development";
+
+let cachedProducts: MockRoomPreviewProduct[] | null = null;
+let cachedRoomImages: string[] | null = null;
 
 function isImageFile(fileName: string) {
   return IMAGE_EXTENSIONS.has(path.extname(fileName).toLowerCase());
@@ -33,8 +37,12 @@ function getProductName(folderName: string, productCode: string) {
 }
 
 function getProductsFromPublicDirectory(): MockRoomPreviewProduct[] {
+  if (SHOULD_CACHE_DIRECTORY_READS && cachedProducts) {
+    return cachedProducts;
+  }
+
   try {
-    return readdirSync(PRODUCTS_DIRECTORY, { withFileTypes: true })
+    const products = readdirSync(PRODUCTS_DIRECTORY, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .filter((entry) => existsSync(path.join(PRODUCTS_DIRECTORY, entry.name, "p.png")))
       .map((entry) => {
@@ -49,6 +57,12 @@ function getProductsFromPublicDirectory(): MockRoomPreviewProduct[] {
         } satisfies MockRoomPreviewProduct;
       })
       .sort((left, right) => left.id.localeCompare(right.id));
+
+    if (SHOULD_CACHE_DIRECTORY_READS) {
+      cachedProducts = products;
+    }
+
+    return products;
   } catch {
     return [];
   }
@@ -59,8 +73,12 @@ export function getRoomPreviewMockProducts(): MockRoomPreviewProduct[] {
 }
 
 export function getRoomPreviewProductRoomImages(): string[] {
+  if (SHOULD_CACHE_DIRECTORY_READS && cachedRoomImages) {
+    return cachedRoomImages;
+  }
+
   try {
-    return readdirSync(PRODUCTS_DIRECTORY, { withFileTypes: true })
+    const roomImages = readdirSync(PRODUCTS_DIRECTORY, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => {
         const roomImage = readdirSync(path.join(PRODUCTS_DIRECTORY, entry.name), { withFileTypes: true })
@@ -79,6 +97,12 @@ export function getRoomPreviewProductRoomImages(): string[] {
       .filter((item): item is { id: string; imageUrl: string } => item !== null)
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((item) => item.imageUrl);
+
+    if (SHOULD_CACHE_DIRECTORY_READS) {
+      cachedRoomImages = roomImages;
+    }
+
+    return roomImages;
   } catch {
     return [];
   }

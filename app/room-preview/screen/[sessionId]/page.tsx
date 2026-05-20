@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import Link from "next/link";
 import os from "os";
 import { House } from "lucide-react";
 import QRCode from "qrcode";
@@ -125,14 +126,14 @@ export default async function ScreenSessionPage({ params }: ScreenSessionPagePro
         </div>
       </div>
 
-      <a
+      <Link
         href="/"
         className="fixed bottom-6 left-4 z-[100] flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-surface)]/90 px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] shadow-md backdrop-blur-md transition-all hover:bg-[var(--bg-surface-2)] hover:text-[var(--text-primary)] active:scale-95"
         dir="rtl"
       >
         <House size={15} strokeWidth={2} />
         <span>الرئيسية</span>
-      </a>
+      </Link>
     </main>
   );
 }

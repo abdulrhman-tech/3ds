@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getLogger } from "@/lib/logger";
+import { isProductionRedisRequiredButUnavailable } from "@/lib/redis";
 import { guardSession } from "@/lib/room-preview/api-guard";
 import { isRoomPreviewRateLimitDisabled } from "@/lib/room-preview/rate-limit-bypass";
 import { trackEvent, getUserSessionIdForSession } from "@/lib/analytics/event-tracker";
@@ -101,6 +102,17 @@ export async function POST(
   // ── 1. Auth ────────────────────────────────────────────────────────────────
   const unauthorized = guardSession(request, sessionId);
   if (unauthorized) return unauthorized;
+
+  if (isProductionRedisRequiredButUnavailable()) {
+    log.error({ sessionId }, "Render blocked because Redis is required in production");
+    return NextResponse.json(
+      {
+        code: "REDIS_REQUIRED",
+        error: "Rendering is temporarily unavailable because Redis is not configured.",
+      },
+      { status: 503 },
+    );
+  }
 
   const rateLimitDisabled = isRoomPreviewRateLimitDisabled();
   const deviceId = getDeviceFingerprint(request);
@@ -348,7 +360,7 @@ export async function POST(
       }
     })();
 
-    void executeRenderPipeline(sessionId);
+    after(() => executeRenderPipeline(sessionId));
 
     return NextResponse.json(updatedSession, { status: 202 });
   } catch (error) {
